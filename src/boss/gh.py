@@ -6,10 +6,14 @@ have changed.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 ISSUE_FIELDS = "number,title,body,labels,comments,state,url"
+
+# gh colors its output, JSON included, when these force it, even into a pipe.
+FORCE_COLOR_VARS = ("CLICOLOR_FORCE", "GH_FORCE_TTY", "FORCE_COLOR")
 
 
 class GhError(RuntimeError):
@@ -23,7 +27,12 @@ class Gh:
 
     def __call__(self, *args: str, stdin: str | None = None) -> str:
         result = subprocess.run(
-            ["gh", *args], cwd=self.cwd, input=stdin, capture_output=True, text=True
+            ["gh", *args],
+            cwd=self.cwd,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            env=gh_env(),
         )
         if result.returncode != 0:
             raise GhError(f"gh {' '.join(args[:3])}: {result.stderr.strip()}")
@@ -77,3 +86,9 @@ class Gh:
     def create_label(self, name: str, color: str, description: str) -> None:
         self("label", "create", name, "--repo", self.repo, "--color", color,
              "--description", description, "--force")  # fmt: skip
+
+
+def gh_env() -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in FORCE_COLOR_VARS}
+    env["NO_COLOR"] = "1"
+    return env
