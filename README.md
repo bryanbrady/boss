@@ -1,1 +1,122 @@
 # boss
+
+boss watches a GitHub repo for labelled issues and hands each one to a coding agent: a
+local model through [opencode](https://opencode.ai), or Claude Code. Every agent runs
+in a locked-down container, and boss opens a PR when the issue's checks pass. If a local
+agent fails, boss hands the issue to Claude. If Claude fails too, the issue is left for
+you.
+
+The poller is plain Python. It never calls a model itself.
+
+## Labels
+
+Labels are boss's only state, so you drive it from GitHub.
+
+| Label | Meaning |
+|---|---|
+| `boss:queued` | Put this on an issue to queue it |
+| `boss:running` / `boss:done` / `boss:failed` | Set by boss |
+| `agent:local` / `agent:claude` | Who does the work. Default: local |
+| `do:implement` / `do:test` / `do:debug` | What kind of work. Default: implement |
+| `do:review` | Not supported yet |
+| `priority:p0` … `priority:p3` | Queue order. Default: p2. Ties go to the oldest issue |
+
+**Done means the checks pass.** boss reads the section whose heading starts with
+"Tests". In that section, each list item that starts with a code span is a check, and so
+is each fenced block. They run in a fresh sandbox after the agent finishes, so they must
+be runnable shell commands. The [task-to-github-issue](skills/task-to-github-issue/SKILL.md)
+skill writes issues in this shape:
+
+```markdown
+## Tests required for completion
+- [ ] `uv run pytest tests/test_cli.py`
+- [ ] `uv run ruff check .`
+```
+
+If an issue has no checks, boss opens the PR anyway and marks it unverified.
+
+Comments on the issue go into the agent's prompt only if they come from the repo's owner,
+members or collaborators. boss's own failure comments count as well, so a Claude retry
+sees why the local attempt failed.
+
+## Setup
+
+```bash
+docker build -t boss-agent images/agent    # the sandbox image
+uv sync
+
+export BOSS_OLLAMA_URL=http://<ollama-host>:11434
+export BOSS_LOCAL_MODEL=<model name from `ollama list`>
+export CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>   # only needed for Claude runs
+
+uv run boss labels owner/repo              # create boss's labels in the repo
+```
+
+On the Ollama host, set `OLLAMA_HOST=0.0.0.0` so other machines can connect. Also raise
+`OLLAMA_CONTEXT_LENGTH`: the default is too small for an agent's prompt and tools.
+
+## Use
+
+```bash
+uv run boss run owner/repo 42      # run issue 42 now; on a local failure, retry with Claude
+uv run boss watch owner/repo       # poll every 60s and run boss:queued issues in priority order
+```
+
+Each run's files are kept in `~/.local/state/boss/runs/<repo>-<issue>-<time>/`
+(`BOSS_HOME` moves them):
+- `logs/agent.log`: the agent's output
+- `logs/check-N.log`: each check's output
+- `logs/gate.log`: every network connection the run attempted
+- `boss/prompt.md`: exactly what the agent was told
+
+## Branches and locking
+
+Each issue has one branch, `boss/issue-N`. If it's already on GitHub, from an earlier run
+or from your own commits, the next run checks it out and builds on it. The agent's
+prompt says so.
+
+**boss never force-pushes.** Every push is fast-forward only, and host-side git refuses
+any force flag. If the branch moves on GitHub during a run, the push is rejected. The
+issue is then marked `boss:failed` with a comment, and nothing is overwritten. Queue the
+issue again to build on the new commits.
+
+Only one boss process can run an issue at a time. Runs take a per-issue lock (an `flock`
+under `BOSS_HOME/locks/`), so `watch` and a manual `boss run` can't both pick up the same
+issue: `watch` skips an issue another process holds. The kernel releases the lock when a
+process exits, so a crash never leaves a stale lock. On startup, `watch` requeues
+`boss:running` issues that no live process holds. The lock covers one machine only.
+
+## The sandbox
+
+Agents and checks run in containers that:
+- run as your user, with all capabilities dropped and `no-new-privileges`
+- have a read-only root filesystem and a tmpfs `/tmp`
+- have memory, CPU and process limits, and are killed at a timeout
+- mount only the run's clone and the run's read-only input directory: no home directory,
+  SSH keys, Docker socket or GitHub token
+- sit on a per-run internal network with no route out
+
+Each run's only way out is a gate container. The gate forwards one port to Ollama, and
+proxies HTTPS only to an allowlist: package registries (plus GitHub, for uv's Python
+downloads), and `api.anthropic.com` for Claude runs. Use `--allow host` to add more. The
+Claude token is passed to Claude containers by name, and boss refuses to push a diff that
+contains it. boss also redacts it from anything it posts.
+
+The real git directory stays on the host, outside the clone. Host-side git always names
+it explicitly and runs with hooks and fsmonitor disabled, so nothing an agent writes into
+the clone gets run on your machine. The agent works in its own throwaway copy of the
+history.
+
+## Development
+
+```bash
+uv run pytest              # unit tests
+uv run pytest --docker     # plus end-to-end runs in real containers (needs boss-agent built)
+uv run ruff check . && uv run ruff format --check .
+```
+
+## Not built yet
+
+- `do:review`: review a PR's diff and post the review as a comment
+- triage: Claude reads the open issues and sets `priority:*` and `agent:*`
+- running more than one issue at a time
