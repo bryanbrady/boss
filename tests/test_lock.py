@@ -4,9 +4,10 @@ from pathlib import Path
 import pytest
 
 from boss import labels, watch
-from boss.agents import Settings
+from boss.agents import ConfigError, Settings
 from boss.git import HostRepo
 from boss.lock import Locked, issue_lock
+from boss.run import Outcome
 
 
 def test_second_holder_is_refused_until_the_first_lets_go(tmp_path):
@@ -43,9 +44,10 @@ def test_requeue_skips_issues_a_live_process_holds(tmp_path):
 def test_watch_runs_the_first_issue_it_can_lock(tmp_path, monkeypatch):
     ran = []
 
-    def fake_run(settings, gh, number, log):  # the real run_issue takes the lock itself
+    def fake_run(settings, gh, number, queued_only, log):  # the real one takes the lock
         with issue_lock(settings.home, gh.repo, number):
             ran.append(number)
+        return Outcome("done", "")
 
     monkeypatch.setattr(watch, "run_issue", fake_run)
     queue = [{"number": 1}, {"number": 2}, {"number": 3}]
@@ -56,11 +58,31 @@ def test_watch_runs_the_first_issue_it_can_lock(tmp_path, monkeypatch):
 
 
 def test_watch_reports_nothing_to_run_when_all_are_held(tmp_path, monkeypatch):
-    def held(s, gh, n, log):
+    def held(s, gh, n, queued_only, log):
         raise Locked("held")
 
     monkeypatch.setattr(watch, "run_issue", held)
     assert not watch.run_next(Settings(home=tmp_path), FakeGh(), [{"number": 1}], lambda _: None)
+
+
+def test_watch_skips_an_issue_the_listing_still_shows_as_queued(tmp_path, monkeypatch):
+    class StaleGh(FakeGh):
+        comments = []
+
+        def issue(self, number):  # #1 was just failed; only #2 is really still queued
+            return {"number": number, "labels": [{"name": labels.QUEUED}] if number == 2 else []}
+
+        def comment(self, number, body):
+            self.comments.append(number)
+
+    def no_token(settings, name):
+        raise ConfigError("no token")
+
+    monkeypatch.setattr("boss.run.make_agent", no_token)
+    gh, settings = StaleGh(), Settings(home=tmp_path)
+    assert watch.run_next(settings, gh, [{"number": 1}, {"number": 2}], log=lambda _: None)
+    assert gh.comments == [2]
+    assert not watch.run_next(settings, gh, [{"number": 1}], log=lambda _: None)
 
 
 @pytest.mark.parametrize(

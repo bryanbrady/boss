@@ -25,7 +25,7 @@ def run_next(settings: Settings, gh: Gh, queue: list[dict], log=print) -> bool:
     for issue in queue:
         number = issue["number"]
         try:
-            run_issue(settings, gh, number, log=log)
+            outcome = run_issue(settings, gh, number, queued_only=True, log=log)
         except Locked as error:
             log(f"{error}; skipping it")
             continue
@@ -33,6 +33,9 @@ def run_next(settings: Settings, gh: Gh, queue: list[dict], log=print) -> bool:
             log(f"#{number}: {error}; marking it {labels.FAILED}")
             gh.comment(number, f"boss can't run this: {error}")
             gh.edit_labels(number, add=[labels.FAILED], remove=[labels.QUEUED, labels.RUNNING])
+            return True
+        if outcome.status == "skipped":
+            continue
         return True
     return False
 

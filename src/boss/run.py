@@ -28,7 +28,7 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 @dataclass(frozen=True)
 class Outcome:
-    status: str  # "done", "escalated" or "failed"
+    status: str  # "done", "escalated", "failed" or "skipped"
     summary: str
     pr_url: str | None = None
 
@@ -47,17 +47,30 @@ def run_issue(
     *,
     escalate: bool = True,
     agent: Agent | None = None,
+    queued_only: bool = False,
     log=print,
 ) -> Outcome:
-    """Raises Locked if another boss process on this machine is running the issue."""
+    """Raises Locked if another boss process on this machine is running the issue.
+
+    With queued_only, an issue that is no longer boss:queued is skipped. Label listings
+    lag behind edits by a few seconds, so the poller can be handed an issue it just ran.
+    """
     with issue_lock(settings.home, gh.repo, number):
-        return _run_issue(settings, gh, number, escalate, agent, log)
+        return _run_issue(settings, gh, number, escalate, agent, queued_only, log)
 
 
 def _run_issue(
-    settings: Settings, gh: Gh, number: int, escalate: bool, agent: Agent | None, log
+    settings: Settings,
+    gh: Gh,
+    number: int,
+    escalate: bool,
+    agent: Agent | None,
+    queued_only: bool,
+    log,
 ) -> Outcome:
     issue = gh.issue(number)
+    if queued_only and labels.QUEUED not in labels.names(issue):
+        return Outcome("skipped", f"#{number} is no longer {labels.QUEUED}")
     route = labels.route(labels.names(issue))
     if route.kind == "review":
         raise NotImplementedError("do:review isn't supported yet")
