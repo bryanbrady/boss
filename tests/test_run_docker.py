@@ -4,16 +4,19 @@ Needs Docker and the boss-agent image: `pytest --docker`.
 """
 
 import copy
+import os
+import stat
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from boss import labels
-from boss.agents import Agent, Settings
+from boss.agents import REGISTRIES, Agent, Settings
 from boss.gh import Gh
 from boss.run import run_issue
-from boss.sandbox import Sandbox
+from boss.sandbox import Sandbox, has_sysbox
 
 pytestmark = pytest.mark.docker
 
@@ -198,3 +201,56 @@ def test_sandbox_reaches_only_the_allowlist(tmp_path):
         assert not curl("https://example.com/", "--noproxy", "*")
         assert not curl("https://1.1.1.1/", "--noproxy", "*")
     assert "deny  example.com:443" in (tmp_path / "gate.log").read_text()
+
+
+needs_sysbox = pytest.mark.skipif(not has_sysbox(), reason="needs the Sysbox runtime")
+
+COMPOSE = """services:
+  redis:
+    image: redis:7-alpine
+    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 1s, retries: 30}
+"""
+
+
+@needs_sysbox
+def test_nested_docker_runs_a_stack_the_checks_can_reach(world):
+    tmp_path, origin, settings = world
+    settings = replace(settings, nested_docker=True, agent_timeout=300, check_timeout=180)
+    body = ("## Tests\n- `docker compose up -d --wait`\n"
+            "- `docker compose exec -T redis redis-cli ping | grep PONG`\n")  # fmt: skip
+    gh = FakeGh(origin, make_issue(body), tmp_path)
+    # The agent proves it has Docker by pulling through the gate and starting the stack.
+    script = f"cat > compose.yml <<'EOF'\n{COMPOSE}EOF\ndocker compose up -d --wait"
+    outcome = run_issue(settings, gh, 1, agent=script_agent(script))
+    assert outcome.status == "done", gh.comments
+    assert "compose.yml" in branch_files(origin, "boss/issue-1")
+
+
+@needs_sysbox
+def test_files_from_a_box_come_back_owned_by_the_host_user(world):
+    tmp_path, origin, settings = world
+    settings = replace(settings, nested_docker=True, agent_timeout=300)
+    gh = FakeGh(origin, make_issue(""), tmp_path)
+    # Root in a container inside the box writes a setuid binary and deletes a file.
+    script = ("docker run --rm -v /work:/w redis:7-alpine sh -c"
+              " 'cp /bin/busybox /w/suid && chmod 4755 /w/suid && rm /w/README.md'")  # fmt: skip
+    outcome = run_issue(settings, gh, 1, agent=script_agent(script))
+    assert outcome.status == "done", gh.comments
+    work = next((tmp_path / "home" / "runs").iterdir()) / "work"
+    mode = (work / "suid").stat()
+    assert mode.st_uid == os.getuid()
+    assert not mode.st_mode & stat.S_ISUID
+    assert not (work / "README.md").exists()
+    assert "README.md" not in branch_files(origin, "boss/issue-1")
+
+
+@needs_sysbox
+def test_builds_in_a_box_install_packages_through_the_gate(world):
+    tmp_path, origin, settings = world
+    settings = replace(settings, nested_docker=True, agent_timeout=300, check_timeout=180)
+    body = "## Tests\n- `docker build -q -t t . && docker run --rm t ls /tmp | grep six`\n"
+    gh = FakeGh(origin, make_issue(body), tmp_path)
+    dockerfile = "FROM python:3.13-slim\nRUN pip download --no-deps -d /tmp six\n"
+    script = f"cat > Dockerfile <<'EOF'\n{dockerfile}EOF"
+    outcome = run_issue(settings, gh, 1, agent=script_agent(script, allow=REGISTRIES))
+    assert outcome.status == "done", gh.comments

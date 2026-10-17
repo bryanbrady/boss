@@ -61,3 +61,10 @@ def test_prompt_drops_comments_from_outsiders():
 def test_only_a_heading_that_starts_with_tests_opens_the_section():
     body = "## How to test\n- `no`\n### Unit tests\n- `no`\n### Test plan\n- `yes`\n"
     assert checks(body) == ["yes"]
+
+
+def test_prompt_mentions_docker_only_in_nested_docker_runs():
+    issue = {"number": 7, "title": "t", "body": "", "comments": []}
+    route = Route("local", "implement", "p2")
+    assert "docker compose" not in build("o/r", issue, route, [])
+    assert "docker compose" in build("o/r", issue, route, [], docker=True)

@@ -16,6 +16,12 @@ REGISTRIES = [
     "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
 ]  # fmt: skip
 
+# What a nested-Docker run's daemon pulls from: Docker Hub's API, auth and blob storage.
+DOCKER_HUB = [
+    "registry-1.docker.io", "auth.docker.io",
+    "production.cloudflare.docker.com", "production.cloudfront.docker.com",
+]  # fmt: skip
+
 OLLAMA_PORT = 11434
 CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
 
@@ -34,6 +40,7 @@ class Settings:
     agent_timeout: int = 1800
     check_timeout: int = 900
     extra_allow: tuple[str, ...] = ()
+    nested_docker: bool = False  # agents and checks get their own Docker daemon (Sysbox)
 
     @classmethod
     def from_env(cls, **overrides) -> "Settings":
@@ -44,6 +51,7 @@ class Settings:
             "ollama_url": env.get("BOSS_OLLAMA_URL"),
             "local_model": env.get("BOSS_LOCAL_MODEL"),
             "claude_model": env.get("BOSS_CLAUDE_MODEL"),
+            "nested_docker": env.get("BOSS_DOCKER", "") not in ("", "0"),
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**values)

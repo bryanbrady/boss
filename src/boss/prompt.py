@@ -23,6 +23,14 @@ KIND_INSTRUCTIONS = {
 }
 
 
+DOCKER_RULE = (
+    "Docker and `docker compose` work here, with a daemon of your own. Images come from "
+    "Docker Hub. Containers you start reach the internet only over HTTPS to the same "
+    "registries, and their published ports are on localhost. The checks run in a fresh "
+    "Docker environment, in the order listed, so leave nothing they need running."
+)
+
+
 def checks(body: str) -> list[str]:
     """Commands from the issue's tests section: list items that start with a code span, and
     fenced blocks. They run in a fresh container after the agent finishes."""
@@ -46,7 +54,13 @@ def checks(body: str) -> list[str]:
 
 
 def build(
-    repo: str, issue: dict, route: Route, commands: list[str], *, continuing: bool = False
+    repo: str,
+    issue: dict,
+    route: Route,
+    commands: list[str],
+    *,
+    continuing: bool = False,
+    docker: bool = False,
 ) -> str:
     parts = [
         f"You are working on issue #{issue['number']} in {repo}. The repository is checked "
@@ -77,6 +91,7 @@ def build(
         "Leave your changes in the working tree. You don't need to commit, and you can't "
         "push: there is no GitHub access here.",
         "The network is limited to package registries, through the proxy in HTTPS_PROXY.",
+        *([DOCKER_RULE] if docker else []),
         "Finish with a short summary of what you changed and why.",
     ]
     parts.append("## Instructions\n\n" + "\n".join(f"- {r}" for r in rules))

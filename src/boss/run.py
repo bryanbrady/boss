@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from boss import labels, prompt
-from boss.agents import Agent, Settings, make_agent
+from boss.agents import DOCKER_HUB, Agent, Settings, make_agent
 from boss.gh import Gh
 from boss.git import HostRepo, PushRejected
 from boss.labels import Route
@@ -120,23 +120,26 @@ def attempt(
     repo.give_agent_a_copy()
 
     commands = prompt.checks(issue["body"])
-    text = prompt.build(gh.repo, issue, route, commands, continuing=continuing)
+    text = prompt.build(gh.repo, issue, route, commands, continuing=continuing,
+                        docker=settings.nested_docker)  # fmt: skip
     (inputs / "prompt.md").write_text(text)
     for name, content in agent.files.items():
         (inputs / name).write_text(content)
 
     mounts = [Mount(work, "/work"), Mount(inputs, "/boss", read_only=True)]
-    sandbox = Sandbox(run_dir.name.lower(), settings.image, logs, agent.allow, agent.forwards)
+    allow = [*agent.allow, *(DOCKER_HUB if settings.nested_docker else [])]
+    sandbox = Sandbox(run_dir.name.lower(), settings.image, logs, allow, agent.forwards,
+                      nested_docker=settings.nested_docker)  # fmt: skip
     with sandbox:
         log(f"#{number}: agent running (timeout {settings.agent_timeout}s)")
-        result = sandbox.run(
-            "agent",
-            agent.command,
-            mounts=mounts,
-            env=agent.env,
-            inherit_env=agent.inherit_env,
-            timeout=settings.agent_timeout,
-        )
+        with sandbox.session("agent", mounts) as session:
+            result = session.run(
+                "agent",
+                agent.command,
+                env=agent.env,
+                inherit_env=agent.inherit_env,
+                timeout=settings.agent_timeout,
+            )
         if result.timed_out:
             raise Failure(f"the agent timed out after {settings.agent_timeout}s", result.log)
         if not result.ok:
@@ -150,14 +153,15 @@ def attempt(
             raise Failure("the change contains a secret from the agent's environment")
 
         check_lines = []
-        for i, command in enumerate(commands, 1):
-            log(f"#{number}: check {i}/{len(commands)}: {command}")
-            check = sandbox.run(f"check-{i}", ["bash", "-lc", command], mounts=mounts,
-                                timeout=settings.check_timeout)  # fmt: skip
-            if not check.ok:
-                why = "timed out" if check.timed_out else f"exited with code {check.exit_code}"
-                raise Failure(f"check `{command}` {why}", check.log)
-            check_lines.append(f"- ✅ `{command}`")
+        with sandbox.session("checks", mounts) as session:
+            for i, command in enumerate(commands, 1):
+                log(f"#{number}: check {i}/{len(commands)}: {command}")
+                check = session.run(f"check-{i}", ["bash", "-lc", command],
+                                    timeout=settings.check_timeout)  # fmt: skip
+                if not check.ok:
+                    why = "timed out" if check.timed_out else f"exited with code {check.exit_code}"
+                    raise Failure(f"check `{command}` {why}", check.log)
+                check_lines.append(f"- ✅ `{command}`")
 
     repo.push(branch)
     summary = tail(result.log, secrets)

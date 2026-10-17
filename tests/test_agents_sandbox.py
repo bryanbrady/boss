@@ -1,9 +1,10 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from boss.agents import CLAUDE_TOKEN, ConfigError, Settings, claude_agent, local_agent
-from boss.sandbox import Mount, Sandbox, gate_args, run_args
+from boss.sandbox import Mount, Sandbox, box_args, exec_args, gate_args, run_args
 
 
 def settings(**kwargs):
@@ -55,3 +56,34 @@ def test_gate_gets_the_allowlist_and_forwards():
     args = gate_args(sandbox)
     assert args[-4:] == ["--allow", "pypi.org", "--forward", "11434:h:1"]
     assert "65534:65534" in args
+
+
+def test_boxes_use_sysbox_and_mount_nothing_from_the_host():
+    sandbox = Sandbox("r1", "img", Path("/tmp"), nested_docker=True)
+    args = box_args(sandbox, "boss-r1-agent")
+    joined = " ".join(args)
+    assert "--runtime sysbox-runc" in joined
+    assert "--network boss-r1" in joined
+    assert "type=volume,source=boss-r1-docker,target=/var/lib/docker" in joined
+    assert "type=bind" not in joined
+    assert "/var/run/docker.sock" not in joined
+    assert "--privileged" not in joined
+    for flag in ("--pids-limit", "--memory", "--cpus"):
+        assert flag in joined
+
+
+def test_box_commands_run_as_the_host_user_and_pass_secrets_by_name(monkeypatch):
+    monkeypatch.setenv(CLAUDE_TOKEN, "sk-secret")
+    args = exec_args("box", ["claude"], {"A": "1"}, [CLAUDE_TOKEN])
+    assert args[:3] == ["docker", "exec", "--user"]
+    assert args[3] == f"{os.getuid()}:{os.getgid()}"
+    assert "sk-secret" not in " ".join(args)
+    assert "HTTPS_PROXY=http://gate:3128" in args
+    assert args[-2:] == ["boss-entrypoint", "claude"]
+
+
+def test_settings_turn_on_nested_docker_from_the_environment(monkeypatch):
+    monkeypatch.setenv("BOSS_DOCKER", "1")
+    assert Settings.from_env().nested_docker
+    monkeypatch.setenv("BOSS_DOCKER", "0")
+    assert not Settings.from_env().nested_docker

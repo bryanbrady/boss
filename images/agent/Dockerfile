@@ -1,4 +1,5 @@
-# The one image every boss container uses: the agent, the checks and the egress gate.
+# The one image every boss container uses: the agent, the checks and the egress gate. It
+# also has a Docker engine, which runs only in nested-Docker runs (Sysbox; see sandbox.py).
 #
 #   docker build -t boss-agent images/agent
 #
@@ -13,6 +14,16 @@ RUN apt-get update \
     bash ca-certificates curl git jq procps python3 python3-venv ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
+RUN install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc]" \
+    "https://download.docker.com/linux/debian bookworm stable" \
+    > /etc/apt/sources.list.d/docker.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    containerd.io docker-buildx-plugin docker-ce docker-ce-cli docker-compose-plugin iptables \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 ARG CLAUDE_CODE_VERSION=latest
@@ -23,6 +34,7 @@ RUN npm install -g --no-audit --no-fund \
 
 COPY gate.py /usr/local/bin/boss-gate
 COPY entrypoint.sh /usr/local/bin/boss-entrypoint
+COPY dockerd.sh /usr/local/bin/boss-dockerd
 
 # Everything that writes goes under /tmp, the only writable path besides /work.
 ENV HOME=/tmp/home \

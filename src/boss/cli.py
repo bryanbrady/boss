@@ -8,7 +8,7 @@ from boss.agents import ConfigError, Settings
 from boss.gh import Gh, GhError
 from boss.lock import Locked
 from boss.run import run_issue
-from boss.sandbox import image_exists
+from boss.sandbox import has_sysbox, image_exists
 from boss.watch import watch
 
 
@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--agent-timeout", type=int, help="seconds, default 1800")
         command.add_argument("--allow", action="append", default=[], metavar="HOST[:PORT]",
                              help="extra host the sandbox may reach over HTTPS")  # fmt: skip
+        command.add_argument("--docker", action="store_true", default=None,
+                             help="give agents and checks their own Docker daemon, in a "
+                                  "Sysbox container (BOSS_DOCKER=1)")  # fmt: skip
 
     args = parser.parse_args(argv)
     if args.command == "labels":
@@ -55,9 +58,13 @@ def main(argv: list[str] | None = None) -> int:
         claude_model=args.claude_model,
         agent_timeout=args.agent_timeout,
         extra_allow=tuple(args.allow) or None,
+        nested_docker=args.docker,
     )
     if not image_exists(settings.image):
         print(f"no image {settings.image}; build it: docker build -t boss-agent images/agent")
+        return 1
+    if settings.nested_docker and not has_sysbox():
+        print("--docker needs the Sysbox runtime: https://github.com/nestybox/sysbox")
         return 1
     settings.home.mkdir(parents=True, exist_ok=True)
     gh = Gh(args.repo, settings.home)

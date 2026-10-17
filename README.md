@@ -66,6 +66,7 @@ Each run's files are kept in `~/.local/state/boss/runs/<repo>-<issue>-<time>/`
 (`BOSS_HOME` moves them):
 - `logs/agent.log`: the agent's output
 - `logs/check-N.log`: each check's output
+- `logs/agent-dockerd.log`, `logs/checks-dockerd.log`: the boxes' Docker daemons (`--docker`)
 - `logs/gate.log`: every network connection the run attempted
 - `boss/prompt.md`: exactly what the agent was told
 
@@ -102,6 +103,35 @@ downloads), and `api.anthropic.com` for Claude runs. Use `--allow host` to add m
 Claude token is passed to Claude containers by name, and boss refuses to push a diff that
 contains it. boss also redacts it from anything it posts.
 
+### Nested Docker
+
+Some projects can only be checked with Docker: `docker compose up`, then tests against the
+running stack. The sandbox above has no Docker, so with `--docker` (or `BOSS_DOCKER=1`)
+boss runs the agent in a [Sysbox](https://github.com/nestybox/sysbox) container instead:
+a box with its own Docker daemon. When the agent finishes, the checks run in order in a
+second, fresh box, so one check can start the stack and the next can `curl localhost`.
+
+- Root in a box is an unprivileged user on the host. The box can't see the host's Docker
+  daemon or containers, and it sits behind the same gate. Docker Hub is added to the
+  allowlist.
+- Inside the box, the daemon needs root and a writable filesystem, so the read-only and
+  no-capabilities hardening doesn't apply there. Memory, CPU and process limits do.
+- Boxes get no host mounts. boss copies the work tree in and out as a tar stream, so
+  everything that comes back is owned by you, with setuid bits stripped. (A bind mount
+  would let root in the box write files owned by real root, setuid included.)
+- A run's two boxes share one volume for images, so the checks reuse what the agent
+  pulled or built. The volume is deleted with the run.
+- Containers inside a box reach the internet only over HTTPS to allowlisted hosts. A
+  Dockerfile that runs `apt-get` against plain-HTTP mirrors won't build.
+- A box shares the host's kernel, so it's weaker isolation than a VM.
+
+Install Sysbox once (it needs the real Docker Engine, not Docker Desktop):
+
+```bash
+sudo apt-get install ./sysbox-ce_<version>.linux_amd64.deb   # from github.com/nestybox/sysbox/releases
+uv run boss watch owner/repo --docker
+```
+
 The real git directory stays on the host, outside the clone. Host-side git always names
 it explicitly and runs with hooks and fsmonitor disabled, so nothing an agent writes into
 the clone gets run on your machine. The agent works in its own throwaway copy of the
@@ -111,7 +141,8 @@ history.
 
 ```bash
 uv run pytest              # unit tests
-uv run pytest --docker     # plus end-to-end runs in real containers (needs boss-agent built)
+uv run pytest --docker     # plus end-to-end runs in real containers (needs boss-agent built;
+                           # the nested-Docker ones also need Sysbox)
 uv run ruff check . && uv run ruff format --check .
 ```
 
