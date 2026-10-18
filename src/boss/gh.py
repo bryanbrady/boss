@@ -66,8 +66,9 @@ class Gh:
         self("issue", "comment", str(number), "--repo", self.repo, "--body-file", "-", stdin=body)
 
     def clone(self, work_tree: Path, git_dir: Path) -> None:
+        """The default branch only. An agent sees no one's other branches."""
         self("repo", "clone", self.repo, str(work_tree), "--",
-             f"--separate-git-dir={git_dir}", "--quiet")  # fmt: skip
+             f"--separate-git-dir={git_dir}", "--single-branch", "--quiet")  # fmt: skip
 
     def open_pr(self, branch: str) -> str | None:
         prs = self.json(

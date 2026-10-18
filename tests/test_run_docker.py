@@ -15,6 +15,7 @@ import pytest
 from boss import labels
 from boss.agents import REGISTRIES, Agent, Settings
 from boss.gh import Gh
+from boss.git import HostRepo
 from boss.run import run_issue
 from boss.sandbox import Sandbox, has_sysbox
 
@@ -40,8 +41,9 @@ class FakeGh(Gh):
         self.comments.append(body)
 
     def clone(self, work_tree, git_dir):
-        subprocess.run(["git", "clone", "--quiet", f"--separate-git-dir={git_dir}",
-                        str(self.origin), str(work_tree)], check=True)  # fmt: skip
+        subprocess.run(["git", "clone", "--quiet", "--single-branch",
+                        f"--separate-git-dir={git_dir}", str(self.origin), str(work_tree)],
+                       check=True)  # fmt: skip
 
     def open_pr(self, branch):
         return None
@@ -122,19 +124,20 @@ def test_existing_branch_is_built_on_not_replaced(world):
     assert "already has earlier commits" in prompt.read_text()
 
 
-def test_branch_that_moves_during_the_run_is_not_overwritten(world):
+def test_branch_that_moves_during_the_run_is_not_overwritten(world, monkeypatch):
     tmp_path, origin, settings = world
+    give_agent_a_copy, theirs = HostRepo.give_agent_a_copy, []
 
-    class MovingGh(FakeGh):
-        def clone(self, work_tree, git_dir):
-            super().clone(work_tree, git_dir)
-            self.theirs = push_to_origin(tmp_path, origin, "boss/issue-1", "theirs.txt")
+    def someone_pushes_while_the_agent_works(repo):
+        give_agent_a_copy(repo)
+        theirs.append(push_to_origin(tmp_path, origin, "boss/issue-1", "theirs.txt"))
 
-    gh = MovingGh(origin, make_issue("", labels.LOCAL), tmp_path)
+    monkeypatch.setattr(HostRepo, "give_agent_a_copy", someone_pushes_while_the_agent_works)
+    gh = FakeGh(origin, make_issue("", labels.LOCAL), tmp_path)
     outcome = run_issue(settings, gh, 1, agent=script_agent("echo hi > hello.txt"))
     assert outcome.status == "failed"  # not escalated: Claude can't fix a moved branch
     assert "changed on the remote during the run" in gh.comments[-1]
-    assert rev(origin, "boss/issue-1") == gh.theirs
+    assert rev(origin, "boss/issue-1") == theirs[0]
     assert labels.FAILED in labels.names(gh._issue)
     assert not gh.prs
 

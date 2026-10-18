@@ -76,6 +76,10 @@ Each issue has one branch, `boss/issue-N`. If it's already on GitHub, from an ea
 or from your own commits, the next run checks it out and builds on it. The agent's
 prompt says so.
 
+A run clones only the default branch, then fetches `boss/issue-N` if it exists. The agent
+never sees other branches or their open PRs. To have boss build on other work, push it to
+`boss/issue-N`, e.g. `git push origin my-branch:boss/issue-N`.
+
 **boss never force-pushes.** Every push is fast-forward only, and host-side git refuses
 any force flag. If the branch moves on GitHub during a run, the push is rejected. The
 issue is then marked `boss:failed` with a comment, and nothing is overwritten. Queue the

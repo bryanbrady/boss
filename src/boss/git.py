@@ -59,17 +59,12 @@ class HostRepo:
     def head(self) -> str:
         return self("rev-parse", "HEAD").strip()
 
-    def has(self, ref: str) -> bool:
-        try:
-            self("rev-parse", "--verify", "--quiet", ref)
-        except RuntimeError:
-            return False
-        return True
-
     def start_branch(self, branch: str) -> bool:
         """Check out `branch`, building on it if it's already on the remote. Returns True
-        if it was, so earlier work (an earlier run's, or a person's) is kept."""
-        if self.has(f"refs/remotes/origin/{branch}"):
+        if it was, so earlier work (an earlier run's, or a person's) is kept. The clone has
+        only the default branch, so this is the one other branch a run fetches."""
+        if self("ls-remote", "--heads", "origin", f"refs/heads/{branch}").strip():
+            self("fetch", "--quiet", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}")
             self("checkout", "--quiet", "-b", branch, f"origin/{branch}")
             return True
         self("checkout", "--quiet", "-b", branch)
