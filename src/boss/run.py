@@ -144,6 +144,7 @@ def attempt(
             raise Failure(f"the agent timed out after {settings.agent_timeout}s", result.log)
         if not result.ok:
             raise Failure(f"the agent exited with code {result.exit_code}", result.log)
+        repo.absorb_submodules()  # before any host git reads the work tree; see git.py
         if not repo.changed():
             raise Failure("the agent made no changes", result.log)
 

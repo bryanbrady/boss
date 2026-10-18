@@ -70,3 +70,95 @@ def test_a_new_issue_starts_from_the_default_branch(tmp_path, monkeypatch):
     assert not repo.start_branch("boss/issue-3")
     assert repo.branch() == "boss/issue-3"
     assert remote_branches(repo) == {"refs/remotes/origin/HEAD", "refs/remotes/origin/main"}
+
+
+def make_lib(tmp_path, monkeypatch):
+    """A standalone repo to use as a submodule, with a second commit to bump to."""
+    lib = tmp_path / "lib"
+    git("init", "--quiet", "-b", "main", str(lib))
+    commits = []
+    for text in ("one\n", "two\n"):
+        (lib / "data.txt").write_text(text)
+        git("-C", str(lib), "add", ".")
+        git("-C", str(lib), "commit", "--quiet", "-m", text.strip())
+        commits.append(git_out("-C", str(lib), "rev-parse", "HEAD"))
+    return lib, commits
+
+
+def git_out(*args):
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def allow_file(monkeypatch):
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")  # submodule add from a local path
+
+
+def test_absorb_commits_a_submodule_without_running_its_config_on_the_host(tmp_path, monkeypatch):
+    """A submodule's git config lives under the work tree and the agent controls it. boss
+    must stage the submodule without host git ever descending into it and running that
+    config, and must still record the right pinned commit."""
+    allow_file(monkeypatch)
+    origin = make_origin(tmp_path, monkeypatch)
+    lib, (first, _) = make_lib(tmp_path, monkeypatch)
+    repo = clone(tmp_path, origin)
+    repo.start_branch("boss/issue-1")
+    repo.give_agent_a_copy()
+
+    # The agent adds the submodule in its own copy of the work tree.
+    work = repo.work_tree
+    git("-C", str(work), "-c", "protocol.file.allow=always", "submodule", "add", "--quiet",
+        str(lib), "libs/lib")  # fmt: skip
+    git("-C", str(work / "libs/lib"), "checkout", "--quiet", first)
+
+    # ...and leaves config in the submodule that would run a command when host git stages it.
+    marker = tmp_path / "ran-on-host"
+    module = work / ".git/modules/libs/lib"
+    (module / "config").open("a").write(f'[filter "x"]\n\tclean = "touch {marker}; cat"\n')
+    (module / "info").mkdir(exist_ok=True)
+    (module / "info/attributes").write_text("* filter=x\n")
+    (work / "libs/lib/data.txt").write_text("edited\n")  # forces host add to hash the blob
+
+    repo.absorb_submodules()
+    repo.commit_all("add submodule")
+
+    assert not marker.exists()  # the planted filter never ran on the host
+    entry = repo("ls-tree", "HEAD", "libs/lib").split()
+    assert entry[:2] == ["160000", "commit"] and entry[2] == first
+    assert ".gitmodules" in repo("ls-tree", "--name-only", "HEAD").split()
+
+
+def test_absorb_records_a_submodule_bump(tmp_path, monkeypatch):
+    allow_file(monkeypatch)
+    origin = make_origin(tmp_path, monkeypatch)
+    lib, (first, second) = make_lib(tmp_path, monkeypatch)
+    repo = clone(tmp_path, origin)
+    repo.start_branch("boss/issue-1")
+    repo.give_agent_a_copy()
+    work = repo.work_tree
+    git("-C", str(work), "-c", "protocol.file.allow=always", "submodule", "add", "--quiet",
+        str(lib), "libs/lib")  # fmt: skip
+    git("-C", str(work / "libs/lib"), "checkout", "--quiet", second)
+
+    repo.absorb_submodules()
+    assert repo.gitlinks == {"libs/lib": second}
+
+
+def test_absorb_strips_a_plain_nested_repo_the_agent_created(tmp_path, monkeypatch):
+    """A nested repo that isn't a declared submodule is flattened to plain files, so its
+    config can't run and its history isn't committed."""
+    origin = make_origin(tmp_path, monkeypatch)
+    repo = clone(tmp_path, origin)
+    repo.start_branch("boss/issue-1")
+    repo.give_agent_a_copy()
+    work = repo.work_tree
+    nested = work / "vendor"
+    nested.mkdir()
+    git("init", "--quiet", "-b", "main", str(nested))
+    (nested / "thing.txt").write_text("vendored\n")
+
+    repo.absorb_submodules()
+    assert not (nested / ".git").exists()
+    assert repo.gitlinks == {}
+    repo.commit_all("vendor")
+    tracked = repo("ls-tree", "-r", "--name-only", "HEAD").split()
+    assert "vendor/thing.txt" in tracked
