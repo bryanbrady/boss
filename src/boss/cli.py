@@ -20,11 +20,9 @@ def main(argv: list[str] | None = None) -> int:
         "repo", help="owner/name"
     )
 
-    run = sub.add_parser("run", help="run one issue now, routed by its labels")
+    run = sub.add_parser("run", help="run one issue now")
     run.add_argument("repo", help="owner/name")
     run.add_argument("issue", type=int)
-    run.add_argument("--no-escalate", action="store_true",
-                     help="don't hand a failed local attempt to Claude")  # fmt: skip
 
     poll = sub.add_parser("watch", help=f"run {labels.QUEUED} issues as they appear")
     poll.add_argument("repo", help="owner/name")
@@ -33,8 +31,6 @@ def main(argv: list[str] | None = None) -> int:
 
     for command in (run, poll):
         command.add_argument("--image", help="sandbox image (BOSS_IMAGE, default boss-agent)")
-        command.add_argument("--ollama-url", help="Ollama server URL (BOSS_OLLAMA_URL)")
-        command.add_argument("--local-model", help="Ollama model name (BOSS_LOCAL_MODEL)")
         command.add_argument("--claude-model", help="Claude model (BOSS_CLAUDE_MODEL)")
         command.add_argument("--agent-timeout", type=int, help="seconds, default 1800")
         command.add_argument("--allow", action="append", default=[], metavar="HOST[:PORT]",
@@ -53,8 +49,6 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = Settings.from_env(
         image=args.image,
-        ollama_url=args.ollama_url,
-        local_model=args.local_model,
         claude_model=args.claude_model,
         agent_timeout=args.agent_timeout,
         extra_allow=tuple(args.allow) or None,
@@ -73,9 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "watch":
             watch(settings, gh, args.interval, args.once)
             return 0
-        outcome = run_issue(settings, gh, args.issue, escalate=not args.no_escalate)
-        if outcome.status == "escalated":
-            outcome = run_issue(settings, gh, args.issue)
+        outcome = run_issue(settings, gh, args.issue)
         return 0 if outcome.status == "done" else 1
     except (ConfigError, NotImplementedError, GhError, Locked) as error:
         print(f"boss: {error}", file=sys.stderr)

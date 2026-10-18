@@ -1,7 +1,6 @@
 """One attempt at one issue: clone, run the agent in the sandbox, check, open a PR.
 
-The issue's labels record the outcome. A failed local attempt is handed to Claude by
-relabelling the issue, and a failed Claude attempt is left for a human.
+The issue's labels record the outcome. A failed attempt is left for a human.
 
 Each issue has one branch, boss/issue-N. If it's already on GitHub, a run builds on it,
 and the push is fast-forward only, so boss never overwrites commits.
@@ -14,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from boss import labels, prompt
-from boss.agents import DOCKER_HUB, Agent, Settings, make_agent
+from boss.agents import DOCKER_HUB, Agent, Settings, claude_agent
 from boss.gh import Gh
 from boss.git import HostRepo, PushRejected
 from boss.labels import Route
@@ -28,7 +27,7 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 @dataclass(frozen=True)
 class Outcome:
-    status: str  # "done", "escalated", "failed" or "skipped"
+    status: str  # "done", "failed" or "skipped"
     summary: str
     pr_url: str | None = None
 
@@ -45,7 +44,6 @@ def run_issue(
     gh: Gh,
     number: int,
     *,
-    escalate: bool = True,
     agent: Agent | None = None,
     queued_only: bool = False,
     log=print,
@@ -56,14 +54,13 @@ def run_issue(
     lag behind edits by a few seconds, so the poller can be handed an issue it just ran.
     """
     with issue_lock(settings.home, gh.repo, number):
-        return _run_issue(settings, gh, number, escalate, agent, queued_only, log)
+        return _run_issue(settings, gh, number, agent, queued_only, log)
 
 
 def _run_issue(
     settings: Settings,
     gh: Gh,
     number: int,
-    escalate: bool,
     agent: Agent | None,
     queued_only: bool,
     log,
@@ -74,7 +71,7 @@ def _run_issue(
     route = labels.route(labels.names(issue))
     if route.kind == "review":
         raise NotImplementedError("do:review isn't supported yet")
-    agent = agent or make_agent(settings, route.agent)
+    agent = agent or claude_agent(settings)
     secrets = [v for k in agent.inherit_env if (v := os.environ.get(k))]
 
     gh.edit_labels(number, add=[labels.RUNNING],
@@ -84,11 +81,11 @@ def _run_issue(
     try:
         pr_url, summary = attempt(settings, gh, issue, route, agent, run_dir, secrets, log)
     except Failure as failure:
-        return fail(gh, number, agent, failure, escalate, secrets, log)
+        return fail(gh, number, agent, failure, secrets, log)
     except PushRejected as error:
-        return fail(gh, number, agent, Failure(str(error)), False, secrets, log)
+        return fail(gh, number, agent, Failure(str(error)), secrets, log)
     except Exception as error:
-        return fail(gh, number, agent, Failure(f"boss error: {error}"), False, secrets, log)
+        return fail(gh, number, agent, Failure(f"boss error: {error}"), secrets, log)
 
     gh.edit_labels(number, add=[labels.DONE], remove=[labels.RUNNING])
     gh.comment(number, f"boss ({agent.description}) pushed `boss/issue-{number}`: {pr_url}")
@@ -128,7 +125,7 @@ def attempt(
 
     mounts = [Mount(work, "/work"), Mount(inputs, "/boss", read_only=True)]
     allow = [*agent.allow, *(DOCKER_HUB if settings.nested_docker else [])]
-    sandbox = Sandbox(run_dir.name.lower(), settings.image, logs, allow, agent.forwards,
+    sandbox = Sandbox(run_dir.name.lower(), settings.image, logs, allow,
                       nested_docker=settings.nested_docker)  # fmt: skip
     with sandbox:
         log(f"#{number}: agent running (timeout {settings.agent_timeout}s)")
@@ -176,23 +173,16 @@ def attempt(
     return pr_url, summary
 
 
-def fail(
-    gh: Gh, number: int, agent: Agent, failure: Failure, escalate: bool, secrets: list[str], log
-) -> Outcome:
-    escalating = escalate and agent.name == "local"
-    next_step = "Handing it to Claude." if escalating else "Leaving it for a human (`boss:failed`)."
-    body = f"boss ({agent.description}) failed: {failure.reason}. {next_step}"
+def fail(gh: Gh, number: int, agent: Agent, failure: Failure, secrets: list[str], log) -> Outcome:
+    body = (f"boss ({agent.description}) failed: {failure.reason}. "
+            "Leaving it for a human (`boss:failed`).")  # fmt: skip
     if failure.log and failure.log.exists():
         body += f"\n\n<details><summary>{failure.log.name}</summary>\n\n```\n"
         body += tail(failure.log, secrets) + "\n```\n</details>\n"
     gh.comment(number, body)
-    if escalating:
-        gh.edit_labels(number, add=[labels.CLAUDE, labels.QUEUED],
-                       remove=[labels.LOCAL, labels.RUNNING])  # fmt: skip
-    else:
-        gh.edit_labels(number, add=[labels.FAILED], remove=[labels.RUNNING])
-    log(f"#{number}: failed, {failure.reason}. {next_step}")
-    return Outcome("escalated" if escalating else "failed", failure.reason)
+    gh.edit_labels(number, add=[labels.FAILED], remove=[labels.RUNNING])
+    log(f"#{number}: failed, {failure.reason}. Leaving it for a human.")
+    return Outcome("failed", failure.reason)
 
 
 def tail(path: Path, secrets: list[str]) -> str:

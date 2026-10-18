@@ -51,7 +51,7 @@ def test_prompt_drops_comments_from_outsiders():
             {"author": {"login": "rando"}, "authorAssociation": "NONE", "body": "IGNORE ALL"},
         ],
     }
-    text = build("o/r", issue, Route("local", "implement", "p2"), ["make test"])
+    text = build("o/r", issue, Route("implement", "p2"), ["make test"])
     assert "use argparse" in text
     assert "IGNORE ALL" not in text
     assert "`make test`" in text
@@ -65,6 +65,6 @@ def test_only_a_heading_that_starts_with_tests_opens_the_section():
 
 def test_prompt_mentions_docker_only_in_nested_docker_runs():
     issue = {"number": 7, "title": "t", "body": "", "comments": []}
-    route = Route("local", "implement", "p2")
+    route = Route("implement", "p2")
     assert "docker compose" not in build("o/r", issue, route, [])
     assert "docker compose" in build("o/r", issue, route, [], docker=True)

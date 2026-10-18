@@ -3,10 +3,8 @@
 
 Agent containers sit on an internal Docker network with no route out. The gate is the
 only container on both that network and an outside one, so everything an agent reaches
-goes through here:
-
-- an HTTPS proxy (CONNECT only) that admits an allowlist of host:port pairs, and
-- plain TCP forwards, e.g. to the Ollama server.
+goes through here: an HTTPS proxy (CONNECT only) that admits an allowlist of host:port
+pairs.
 
 Every connection attempt is logged to stdout, so `docker logs` on the gate is the run's
 egress record.
@@ -80,19 +78,6 @@ def proxy_handler(allow: set[tuple[str, int]]):
     return handle
 
 
-def forward_handler(host: str, port: int):
-    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            upstream = await asyncio.wait_for(asyncio.open_connection(host, port), 15)
-        except (OSError, TimeoutError) as error:
-            log(f"fail  forward {host}:{port}: {error}")
-            writer.close()
-            return
-        await splice((reader, writer), upstream)
-
-    return handle
-
-
 def parse_allow(entries: list[str]) -> set[tuple[str, int]]:
     allow = set()
     for entry in entries:
@@ -105,19 +90,12 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proxy-port", type=int, default=3128)
     parser.add_argument("--allow", action="append", default=[], metavar="HOST[:PORT]")
-    parser.add_argument("--forward", action="append", default=[], metavar="PORT:HOST:PORT")
     args = parser.parse_args()
 
     allow = parse_allow(args.allow)
-    servers = [await asyncio.start_server(proxy_handler(allow), "0.0.0.0", args.proxy_port)]
+    server = await asyncio.start_server(proxy_handler(allow), "0.0.0.0", args.proxy_port)
     log(f"proxy :{args.proxy_port} allows {sorted(f'{h}:{p}' for h, p in allow)}")
-    for spec in args.forward:
-        listen, host, port = spec.split(":")
-        servers.append(
-            await asyncio.start_server(forward_handler(host, int(port)), "0.0.0.0", int(listen))
-        )
-        log(f"forward :{listen} -> {host}:{port}")
-    await asyncio.gather(*(server.serve_forever() for server in servers))
+    await server.serve_forever()
 
 
 if __name__ == "__main__":

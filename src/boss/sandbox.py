@@ -75,7 +75,6 @@ class Sandbox:
     image: str
     log_dir: Path
     allow: list[str] = field(default_factory=list)  # host[:port] the gate admits over HTTPS
-    forwards: list[str] = field(default_factory=list)  # port:host:port the gate forwards
     limits: Limits = field(default_factory=Limits)
     nested_docker: bool = False
 
@@ -305,8 +304,6 @@ def gate_args(sandbox: Sandbox) -> list[str]:
     ]  # fmt: skip
     for host in sandbox.allow:
         args += ["--allow", host]
-    for spec in sandbox.forwards:
-        args += ["--forward", spec]
     return args
 
 

@@ -3,7 +3,7 @@
 #
 #   docker build -t boss-agent images/agent
 #
-# Pin the agent CLIs with --build-arg CLAUDE_CODE_VERSION=... OPENCODE_VERSION=...
+# Pin the agent CLI with --build-arg CLAUDE_CODE_VERSION=...
 
 FROM ghcr.io/astral-sh/uv:0.12.22 AS uv
 
@@ -27,9 +27,8 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 ARG CLAUDE_CODE_VERSION=latest
-ARG OPENCODE_VERSION=latest
 RUN npm install -g --no-audit --no-fund \
-    "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "opencode-ai@${OPENCODE_VERSION}" \
+    "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
   && npm cache clean --force
 
 COPY gate.py /usr/local/bin/boss-gate
@@ -45,10 +44,7 @@ ENV HOME=/tmp/home \
     UV_CACHE_DIR=/tmp/home/.cache/uv \
     npm_config_cache=/tmp/home/.npm \
     DISABLE_AUTOUPDATER=1 \
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-    OPENCODE_DISABLE_AUTOUPDATE=1 \
-    OPENCODE_DISABLE_MODELS_FETCH=1 \
-    OPENCODE_DISABLE_SHARE=1
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/boss-entrypoint"]

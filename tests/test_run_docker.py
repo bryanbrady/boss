@@ -73,8 +73,8 @@ def make_issue(body, *names):
             "labels": [{"name": n} for n in (labels.QUEUED, *names)]}  # fmt: skip
 
 
-def script_agent(script, name="local", **kwargs):
-    return Agent(name=name, description="script", command=["sh", "-c", script], **kwargs)
+def script_agent(script, **kwargs):
+    return Agent(description="script", command=["sh", "-c", script], **kwargs)
 
 
 def branch_files(origin, branch):
@@ -133,23 +133,21 @@ def test_branch_that_moves_during_the_run_is_not_overwritten(world, monkeypatch)
         theirs.append(push_to_origin(tmp_path, origin, "boss/issue-1", "theirs.txt"))
 
     monkeypatch.setattr(HostRepo, "give_agent_a_copy", someone_pushes_while_the_agent_works)
-    gh = FakeGh(origin, make_issue("", labels.LOCAL), tmp_path)
+    gh = FakeGh(origin, make_issue(""), tmp_path)
     outcome = run_issue(settings, gh, 1, agent=script_agent("echo hi > hello.txt"))
-    assert outcome.status == "failed"  # not escalated: Claude can't fix a moved branch
+    assert outcome.status == "failed"  # a moved branch is not recoverable
     assert "changed on the remote during the run" in gh.comments[-1]
     assert rev(origin, "boss/issue-1") == theirs[0]
     assert labels.FAILED in labels.names(gh._issue)
     assert not gh.prs
 
 
-def test_failed_check_on_local_escalates_to_claude(world):
+def test_failed_check_is_left_for_a_human_and_nothing_is_pushed(world):
     tmp_path, origin, settings = world
-    gh = FakeGh(origin, make_issue("## Tests\n- `test -f nope.txt`\n", labels.LOCAL), tmp_path)
+    gh = FakeGh(origin, make_issue("## Tests\n- `test -f nope.txt`\n"), tmp_path)
     outcome = run_issue(settings, gh, 1, agent=script_agent("echo hi > hello.txt"))
-    assert outcome.status == "escalated"
-    names = labels.names(gh._issue)
-    assert {labels.CLAUDE, labels.QUEUED} <= names
-    assert labels.LOCAL not in names and labels.RUNNING not in names
+    assert outcome.status == "failed"
+    assert labels.FAILED in labels.names(gh._issue)
     assert "check `test -f nope.txt` exited with code 1" in gh.comments[-1]
     assert subprocess.run(["git", "-C", str(origin), "rev-parse", "--verify", "boss/issue-1"],
                           capture_output=True).returncode != 0  # fmt: skip
@@ -157,8 +155,8 @@ def test_failed_check_on_local_escalates_to_claude(world):
 
 def test_claude_failure_is_left_for_a_human(world):
     tmp_path, origin, settings = world
-    gh = FakeGh(origin, make_issue("", labels.CLAUDE), tmp_path)
-    outcome = run_issue(settings, gh, 1, agent=script_agent("true", name="claude"))
+    gh = FakeGh(origin, make_issue(""), tmp_path)
+    outcome = run_issue(settings, gh, 1, agent=script_agent("true"))
     assert outcome.status == "failed"
     assert labels.FAILED in labels.names(gh._issue)
     assert "no changes" in gh.comments[-1]
@@ -168,7 +166,7 @@ def test_secrets_are_not_pushed_or_posted(world, monkeypatch):
     tmp_path, origin, settings = world
     monkeypatch.setenv("BOSS_TEST_SECRET", "s3cr3t-value")
     gh = FakeGh(origin, make_issue(""), tmp_path)
-    agent = script_agent('echo "$BOSS_TEST_SECRET" | tee leak.txt', name="claude",
+    agent = script_agent('echo "$BOSS_TEST_SECRET" | tee leak.txt',
                          inherit_env=["BOSS_TEST_SECRET"])  # fmt: skip
     outcome = run_issue(settings, gh, 1, agent=agent)
     assert outcome.status == "failed"
@@ -235,7 +233,7 @@ def test_agent_timeout_in_a_box_is_reported_as_a_timeout(world):
     settings = replace(settings, nested_docker=True, agent_timeout=5)
     gh = FakeGh(origin, make_issue(""), tmp_path)
     outcome = run_issue(settings, gh, 1, agent=script_agent("echo hi > hello.txt; sleep 60"))
-    assert outcome.status == "escalated"  # an ordinary failure, not a boss error
+    assert outcome.status == "failed"  # a timeout, not a boss error
     assert "timed out after 5s" in gh.comments[-1]
 
 

@@ -78,7 +78,7 @@ def test_watch_skips_an_issue_the_listing_still_shows_as_queued(tmp_path, monkey
     def no_token(settings, name):
         raise ConfigError("no token")
 
-    monkeypatch.setattr("boss.run.make_agent", no_token)
+    monkeypatch.setattr("boss.run.claude_agent", lambda s: no_token(s, "claude"))
     gh, settings = StaleGh(), Settings(home=tmp_path)
     assert watch.run_next(settings, gh, [{"number": 1}, {"number": 2}], log=lambda _: None)
     assert gh.comments == [2]

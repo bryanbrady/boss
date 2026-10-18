@@ -1,10 +1,8 @@
 # boss
 
-boss watches a GitHub repo for labelled issues and hands each one to a coding agent: a
-local model through [opencode](https://opencode.ai), or Claude Code. Every agent runs
-in a locked-down container, and boss opens a PR when the issue's checks pass. If a local
-agent fails, boss hands the issue to Claude. If Claude fails too, the issue is left for
-you.
+boss watches a GitHub repo for labelled issues and hands each one to Claude Code, running
+in a locked-down container, and opens a PR when the issue's checks pass. If the agent
+fails, the issue is left for you.
 
 The poller is plain Python. It never calls a model itself.
 
@@ -16,7 +14,6 @@ Labels are boss's only state, so you drive it from GitHub.
 |---|---|
 | `boss:queued` | Put this on an issue to queue it |
 | `boss:running` / `boss:done` / `boss:failed` | Set by boss |
-| `agent:local` / `agent:claude` | Who does the work. Default: local |
 | `do:implement` / `do:test` / `do:debug` | What kind of work. Default: implement |
 | `do:review` | Not supported yet |
 | `priority:p0` … `priority:p3` | Queue order. Default: p2. Ties go to the oldest issue |
@@ -36,8 +33,8 @@ skill writes issues in this shape:
 If an issue has no checks, boss opens the PR anyway and marks it unverified.
 
 Comments on the issue go into the agent's prompt only if they come from the repo's owner,
-members or collaborators. boss's own failure comments count as well, so a Claude retry
-sees why the local attempt failed.
+members or collaborators. boss's own failure comments count as well, so a re-queued issue
+carries forward why the last attempt failed.
 
 ## Setup
 
@@ -45,20 +42,15 @@ sees why the local attempt failed.
 docker build -t boss-agent images/agent    # the sandbox image
 uv sync
 
-export BOSS_OLLAMA_URL=http://<ollama-host>:11434
-export BOSS_LOCAL_MODEL=<model name from `ollama list`>
-export CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>   # only needed for Claude runs
+export CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>
 
 uv run boss labels owner/repo              # create boss's labels in the repo
 ```
 
-On the Ollama host, set `OLLAMA_HOST=0.0.0.0` so other machines can connect. Also raise
-`OLLAMA_CONTEXT_LENGTH`: the default is too small for an agent's prompt and tools.
-
 ## Use
 
 ```bash
-uv run boss run owner/repo 42      # run issue 42 now; on a local failure, retry with Claude
+uv run boss run owner/repo 42      # run issue 42 now
 uv run boss watch owner/repo       # poll every 60s and run boss:queued issues in priority order
 ```
 
@@ -101,11 +93,10 @@ Agents and checks run in containers that:
   SSH keys, Docker socket or GitHub token
 - sit on a per-run internal network with no route out
 
-Each run's only way out is a gate container. The gate forwards one port to Ollama, and
-proxies HTTPS only to an allowlist: package registries (plus GitHub, for uv's Python
-downloads), and `api.anthropic.com` for Claude runs. Use `--allow host` to add more. The
-Claude token is passed to Claude containers by name, and boss refuses to push a diff that
-contains it. boss also redacts it from anything it posts.
+Each run's only way out is a gate container, which proxies HTTPS only to an allowlist:
+`api.anthropic.com`, and the package registries (plus GitHub, for uv's Python downloads).
+Use `--allow host` to add more. The Claude token is passed to the container by name, and
+boss refuses to push a diff that contains it. boss also redacts it from anything it posts.
 
 ### Nested Docker
 
@@ -153,5 +144,6 @@ uv run ruff check . && uv run ruff format --check .
 ## Not built yet
 
 - `do:review`: review a PR's diff and post the review as a comment
-- triage: Claude reads the open issues and sets `priority:*` and `agent:*`
+- triage: Claude reads the open issues and sets `priority:*`
+- a separate harness to benchmark candidate models on a task suite (not a boss concern)
 - running more than one issue at a time
