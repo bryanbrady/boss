@@ -1,12 +1,13 @@
 import io
 import os
+import subprocess
 import tarfile
 from pathlib import Path
 
 import pytest
 
 from boss.agents import CLAUDE_TOKEN, ConfigError, Settings, claude_agent, local_agent
-from boss.sandbox import Mount, Sandbox, box_args, exec_args, gate_args, keep_inside, run_args
+from boss.sandbox import Box, Mount, Sandbox, box_args, exec_args, gate_args, keep_inside, run_args
 
 
 def settings(**kwargs):
@@ -114,3 +115,31 @@ def test_copy_out_drops_links_that_leave_the_work_tree(tmp_path):
     assert os.readlink(tmp_path / "main.py") == "app.py"
     assert not (tmp_path / ".venv/bin/python").is_symlink()
     assert not (tmp_path / "escape").is_symlink()
+
+
+def box_whose_tar_runs(monkeypatch, tmp_path, script):
+    """A Box whose `docker exec ... tar -c` runs `script` on the host instead."""
+    popen = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: popen(["sh", "-c", script], **kw))
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "README.md").write_text("original\n")
+    return Box(Sandbox("r1", "img", tmp_path), "box", [Mount(work, "/work")]), work
+
+
+def test_copy_out_replaces_the_work_tree_with_the_box_copy(tmp_path, monkeypatch):
+    (tmp_path / "box").mkdir()
+    (tmp_path / "box" / "new.txt").write_text("from the box\n")
+    box, work = box_whose_tar_runs(monkeypatch, tmp_path, f"tar -c -C {tmp_path}/box -f - .")
+    box.copy_out()
+    assert sorted(p.name for p in work.iterdir()) == ["new.txt"]
+    assert not (tmp_path / "work.incoming").exists()
+
+
+def test_failed_copy_out_leaves_the_work_tree_alone(tmp_path, monkeypatch):
+    script = "echo 'Error response from daemon: container box is not running' >&2; exit 1"
+    box, work = box_whose_tar_runs(monkeypatch, tmp_path, script)
+    with pytest.raises(RuntimeError, match="container box is not running"):
+        box.copy_out()
+    assert (work / "README.md").read_text() == "original\n"
+    assert not (tmp_path / "work.incoming").exists()

@@ -125,7 +125,8 @@ class Sandbox:
         try:
             box.start()
             yield box
-            box.copy_out()
+            if not box.killed:  # a timeout kills the whole box, so there's nothing to copy
+                box.copy_out()
         finally:
             box.remove()
 
@@ -162,6 +163,7 @@ class Box:
     sandbox: Sandbox
     container: str
     mounts: list[Mount]
+    killed: bool = False
 
     def start(self) -> None:
         docker(*box_args(self.sandbox, self.container))
@@ -188,7 +190,9 @@ class Box:
         inherit_env: list[str] | None = None,
     ) -> Result:
         args = exec_args(self.container, command, env or {}, inherit_env or [])
-        return supervise(args, self.sandbox.log_dir / f"{name}.log", timeout, self.container)
+        result = supervise(args, self.sandbox.log_dir / f"{name}.log", timeout, self.container)
+        self.killed |= result.timed_out
+        return result
 
     def copy_in(self, mount: Mount) -> None:
         """Stream the mount in as a tar (docker cp fails on a Sysbox container with a
@@ -205,18 +209,34 @@ class Box:
 
     def copy_out(self) -> None:
         """Replace each writable mount with what's in the box, minus owners, setuid bits
-        and links that point outside it (see keep_inside)."""
+        and links that point outside it (see keep_inside). The mount is only replaced once
+        the whole copy has arrived, so a failed copy leaves it as it was."""
         for mount in self.mounts:
             if mount.read_only:
                 continue
+            incoming = mount.host.with_name(f"{mount.host.name}.incoming")
+            incoming.mkdir()
+            try:
+                self.receive(mount.container, incoming)
+            except BaseException:
+                shutil.rmtree(incoming)
+                raise
             shutil.rmtree(mount.host)
-            mount.host.mkdir()
-            tar = ["tar", "-c", "-C", mount.container, "-f", "-", "."]
-            process = subprocess.Popen(["docker", "exec", self.container, *tar],
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # fmt: skip
+            incoming.rename(mount.host)
+
+    def receive(self, path: str, dest: Path) -> None:
+        what = f"copying {path} out"
+        tar = ["tar", "-c", "-C", path, "-f", "-", "."]
+        process = subprocess.Popen(["docker", "exec", self.container, *tar],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # fmt: skip
+        try:
             with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
-                archive.extractall(mount.host, filter=keep_inside)
-            finish(process, f"copying {mount.container} out")
+                archive.extractall(dest, filter=keep_inside)
+        except tarfile.TarError as error:
+            process.stdout.close()
+            finish(process, what)  # docker's own error, e.g. the box isn't running
+            raise RuntimeError(f"{what}: {error}") from error
+        finish(process, what)
 
     def remove(self) -> None:
         name = self.container.removeprefix(f"{self.sandbox.network}-")
@@ -242,8 +262,9 @@ def keep_inside(member: tarfile.TarInfo, dest: str) -> tarfile.TarInfo | None:
 
 
 def finish(process: subprocess.Popen, what: str) -> None:
-    if process.wait() != 0:
-        raise RuntimeError(f"{what}: {process.stderr.read().decode().strip()}")
+    if code := process.wait():
+        error = process.stderr.read().decode().strip()
+        raise RuntimeError(f"{what}: {error or f'exit code {code}'}")
 
 
 def supervise(args: list[str], log: Path, timeout: int, container: str) -> Result:

@@ -230,6 +230,16 @@ def test_nested_docker_runs_a_stack_the_checks_can_reach(world):
 
 
 @needs_sysbox
+def test_agent_timeout_in_a_box_is_reported_as_a_timeout(world):
+    tmp_path, origin, settings = world
+    settings = replace(settings, nested_docker=True, agent_timeout=5)
+    gh = FakeGh(origin, make_issue(""), tmp_path)
+    outcome = run_issue(settings, gh, 1, agent=script_agent("echo hi > hello.txt; sleep 60"))
+    assert outcome.status == "escalated"  # an ordinary failure, not a boss error
+    assert "timed out after 5s" in gh.comments[-1]
+
+
+@needs_sysbox
 def test_files_from_a_box_come_back_owned_by_the_host_user(world):
     tmp_path, origin, settings = world
     settings = replace(settings, nested_docker=True, agent_timeout=300)
