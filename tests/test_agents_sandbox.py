@@ -1,10 +1,12 @@
+import io
 import os
+import tarfile
 from pathlib import Path
 
 import pytest
 
 from boss.agents import CLAUDE_TOKEN, ConfigError, Settings, claude_agent, local_agent
-from boss.sandbox import Mount, Sandbox, box_args, exec_args, gate_args, run_args
+from boss.sandbox import Mount, Sandbox, box_args, exec_args, gate_args, keep_inside, run_args
 
 
 def settings(**kwargs):
@@ -87,3 +89,28 @@ def test_settings_turn_on_nested_docker_from_the_environment(monkeypatch):
     assert Settings.from_env().nested_docker
     monkeypatch.setenv("BOSS_DOCKER", "0")
     assert not Settings.from_env().nested_docker
+
+
+def test_copy_out_drops_links_that_leave_the_work_tree(tmp_path):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        data = tarfile.TarInfo("./app.py")
+        data.size, data.mode = 3, 0o4755
+        archive.addfile(data, io.BytesIO(b"hi\n"))
+        for name, target in [
+            ("./.venv/bin/python", "/usr/bin/python3"),
+            ("./escape", "../../etc/passwd"),
+            ("./main.py", "app.py"),
+        ]:
+            link = tarfile.TarInfo(name)
+            link.type, link.linkname = tarfile.SYMTYPE, target
+            archive.addfile(link)
+    buffer.seek(0)
+    with tarfile.open(fileobj=buffer, mode="r|") as archive:
+        archive.extractall(tmp_path, filter=keep_inside)
+
+    assert (tmp_path / "app.py").read_text() == "hi\n"
+    assert not (tmp_path / "app.py").stat().st_mode & 0o4000  # setuid stripped
+    assert os.readlink(tmp_path / "main.py") == "app.py"
+    assert not (tmp_path / ".venv/bin/python").is_symlink()
+    assert not (tmp_path / "escape").is_symlink()

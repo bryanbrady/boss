@@ -204,8 +204,8 @@ class Box:
         finish(process, f"copying {mount.host} in")
 
     def copy_out(self) -> None:
-        """Replace each writable mount with what's in the box. The "data" filter drops
-        anything that would land outside the directory, and owners and setuid bits."""
+        """Replace each writable mount with what's in the box, minus owners, setuid bits
+        and links that point outside it (see keep_inside)."""
         for mount in self.mounts:
             if mount.read_only:
                 continue
@@ -215,7 +215,7 @@ class Box:
             process = subprocess.Popen(["docker", "exec", self.container, *tar],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # fmt: skip
             with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
-                archive.extractall(mount.host, filter="data")
+                archive.extractall(mount.host, filter=keep_inside)
             finish(process, f"copying {mount.container} out")
 
     def remove(self) -> None:
@@ -229,6 +229,16 @@ class Box:
     def daemon_log(self) -> str:
         result = subprocess.run(["docker", "logs", self.container], capture_output=True, text=True)
         return result.stdout + result.stderr
+
+
+def keep_inside(member: tarfile.TarInfo, dest: str) -> tarfile.TarInfo | None:
+    """tarfile's "data" filter, except that a link pointing outside the directory is
+    dropped rather than failing the whole copy. Tools make these as a matter of course: a
+    virtualenv's bin/python links to the box's /usr/bin/python3."""
+    try:
+        return tarfile.data_filter(member, dest)
+    except (tarfile.AbsoluteLinkError, tarfile.LinkOutsideDestinationError):
+        return None
 
 
 def finish(process: subprocess.Popen, what: str) -> None:
