@@ -14,7 +14,7 @@ from pathlib import Path
 
 from boss import labels, prompt
 from boss.agents import DOCKER_HUB, Agent, Settings, claude_agent
-from boss.gh import BOSS_GH_TOKEN, Gh
+from boss.gh import BOSS_GH_TOKEN, Gh, GhError
 from boss.git import HostRepo, PushRejected
 from boss.labels import Route
 from boss.lock import issue_lock
@@ -176,6 +176,13 @@ def attempt(
         f"<details><summary>Agent output (tail)</summary>\n\n```\n{summary}\n```\n</details>\n"
     )
     pr_url = gh.open_pr(branch) or gh.create_pr(branch, base, issue["title"], body)
+    # boss opens the PR as its own account, so ask the owner to review it: that notifies
+    # them and lists the PR under their review requests.
+    owner = gh.repo.split("/")[0]
+    try:
+        gh.request_review(pr_url, owner)
+    except GhError as error:
+        log(f"#{number}: couldn't request a review from {owner}: {error}")
     return pr_url, summary
 
 

@@ -29,6 +29,7 @@ class FakeGh(Gh):
         self._issue = issue
         self.comments: list[str] = []
         self.prs: list[dict] = []
+        self.reviews: list[tuple[str, str]] = []
 
     def issue(self, number):
         return copy.deepcopy(self._issue)
@@ -50,6 +51,9 @@ class FakeGh(Gh):
 
     def open_pr(self, branch):
         return None
+
+    def request_review(self, pr_url, login):
+        self.reviews.append((pr_url, login))
 
     def create_pr(self, branch, base, title, body):
         self.prs.append({"branch": branch, "base": base, "title": title, "body": body})
@@ -95,6 +99,7 @@ def test_success_pushes_a_branch_and_opens_a_pr(world):
     assert labels.DONE in labels.names(gh._issue)
     assert gh.prs[0]["base"] == "main"
     assert "Closes #1" in gh.prs[0]["body"]
+    assert gh.reviews == [("https://example.invalid/pr/1", "o")]  # the owner is asked to review
 
 
 def push_to_origin(tmp_path, origin, branch, name):

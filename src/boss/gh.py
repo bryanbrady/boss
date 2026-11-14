@@ -120,6 +120,13 @@ class Gh:
         )  # fmt: skip
         return out.strip().splitlines()[-1]
 
+    def request_review(self, pr_url: str, login: str) -> None:
+        """Through REST: `gh pr edit --add-reviewer` also looks up teams, which needs
+        read:org, and boss's token has only repo."""
+        number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+        self("api", "--method", "POST", f"repos/{self.repo}/pulls/{number}/requested_reviewers",
+             "-f", f"reviewers[]={login}", "--silent")  # fmt: skip
+
     def create_label(self, name: str, color: str, description: str) -> None:
         self("label", "create", name, "--repo", self.repo, "--color", color,
              "--description", description, "--force")  # fmt: skip
