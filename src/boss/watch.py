@@ -21,16 +21,21 @@ def requeue_stale(settings: Settings, gh: Gh, log=print) -> None:
             pass
 
 
-def accept_commands(gh: Gh, log=print) -> None:
-    """Queue each issue with a new `do:*` command boss takes, and drop the rest."""
+def accept_commands(gh: Gh, log=print) -> list[dict]:
+    """Queue each issue with a new `do:*` command boss takes, and drop the rest. Returns
+    the issues it queued, since the next listing of boss:queued may not show them yet."""
+    accepted = []
     for listed in gh.issues_with_any_label(labels.COMMANDS):
         if not labels.waiting_to_be_accepted(labels.names(listed)):
             continue
         number = listed["number"]
-        current = labels.names(gh.issue(number))  # listings lag behind label edits
+        issue = gh.issue(number)  # listings lag behind label edits
+        current = labels.names(issue)
         if labels.waiting_to_be_accepted(current) and vet_command(gh, number, current, log):
             log(f"#{number}: accepted {labels.command(current)}")
             gh.apply(number, labels.ACCEPT)
+            accepted.append(issue)
+    return accepted
 
 
 def run_next(settings: Settings, gh: Gh, queue: list[dict], log=print) -> bool:
@@ -58,8 +63,9 @@ def watch(settings: Settings, gh: Gh, interval: int, once: bool = False, log=pri
     log(f"watching {gh.repo} for do:* commands every {interval}s")
     while True:
         try:
-            accept_commands(gh, log)
-            queue = labels.queue_order(gh.issues_with_label(labels.QUEUED))
+            accepted = accept_commands(gh, log)
+            queued = {i["number"]: i for i in [*accepted, *gh.issues_with_label(labels.QUEUED)]}
+            queue = labels.queue_order(list(queued.values()))
             ran = run_next(settings, gh, queue, log)
         except GhError as error:
             log(f"GitHub call failed, will retry: {error}")

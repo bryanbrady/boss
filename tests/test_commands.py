@@ -1,8 +1,9 @@
 """The label state machine, driven through the poller against a fake GitHub."""
 
 from boss import labels, watch
+from boss.agents import Settings
 from boss.labels import applied_by, command, route, trusted
-from boss.run import vet_command
+from boss.run import Outcome, vet_command
 
 
 class FakeGh:
@@ -111,3 +112,22 @@ def test_a_finished_run_drops_its_command_so_adding_it_again_retries():
 def test_no_command_means_implement_for_a_manual_run():
     assert command(set()) is None
     assert route(set()).kind == "implement"
+
+
+def test_watch_once_runs_what_it_just_accepted_though_the_listing_lags(tmp_path, monkeypatch):
+    class LaggingGh(FakeGh):
+        def issues_with_label(self, label):
+            return []  # boss:queued listings trail the edit that set it
+
+    ran = []
+
+    def fake_run(settings, gh, number, queued_only, log):
+        ran.append(number)
+        gh.apply(number, labels.FINISH_DONE)
+        return Outcome("done", "")
+
+    monkeypatch.setattr(watch, "run_issue", fake_run)
+    gh = LaggingGh()
+    gh.label(11, "do:implement", "owner")
+    watch.watch(Settings(home=tmp_path), gh, interval=0, once=True, log=quiet)
+    assert ran == [11]
