@@ -148,7 +148,7 @@ class HostRepo:
             if "rejected" in str(error) or "non-fast-forward" in str(error):
                 raise PushRejected(
                     f"{branch} changed on the remote during the run, so boss didn't push. "
-                    "Queue the issue again to build on the new commits."
+                    "Add the do:* label again to build on the new commits."
                 ) from error
             raise
 

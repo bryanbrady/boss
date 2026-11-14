@@ -50,8 +50,10 @@ def run_issue(
 ) -> Outcome:
     """Raises Locked if another boss process on this machine is running the issue.
 
-    With queued_only, an issue that is no longer boss:queued is skipped. Label listings
-    lag behind edits by a few seconds, so the poller can be handed an issue it just ran.
+    With queued_only (the poller), an issue that is no longer boss:queued is skipped. Label
+    listings lag behind edits by a few seconds, so the poller can be handed an issue it just
+    ran. The issue's command is also checked again, so a boss:queued label that someone else
+    added runs nothing.
     """
     with issue_lock(settings.home, gh.repo, number):
         return _run_issue(settings, gh, number, agent, queued_only, log)
@@ -66,17 +68,20 @@ def _run_issue(
     log,
 ) -> Outcome:
     issue = gh.issue(number)
-    if queued_only and labels.QUEUED not in labels.names(issue):
-        return Outcome("skipped", f"#{number} is no longer {labels.QUEUED}")
-    route = labels.route(labels.names(issue))
+    current = labels.names(issue)
+    if queued_only:
+        if labels.QUEUED not in current:
+            return Outcome("skipped", f"#{number} is no longer {labels.QUEUED}")
+        if not vet_command(gh, number, current, log):
+            return Outcome("skipped", f"#{number} has no command boss will take")
+    route = labels.route(current)
     if route.kind == "review":
         raise NotImplementedError("do:review isn't supported yet")
     agent = agent or claude_agent(settings)
     names = [BOSS_GH_TOKEN, *([CLAUDE_TOKEN] if agent.uses_claude_api else [])]
     secrets = [value for name in names if (value := os.environ.get(name))]
 
-    gh.edit_labels(number, add=[labels.RUNNING],
-                   remove=[labels.QUEUED, labels.DONE, labels.FAILED])  # fmt: skip
+    gh.apply(number, labels.START)
     run_dir = settings.home / "runs" / f"{gh.repo.replace('/', '-')}-{number}-{_stamp()}"
     log(f"#{number}: {route.kind} with {agent.description}, in {run_dir}")
     try:
@@ -88,7 +93,7 @@ def _run_issue(
     except Exception as error:
         return fail(gh, number, agent, Failure(f"boss error: {error}"), secrets, log)
 
-    gh.edit_labels(number, add=[labels.DONE], remove=[labels.RUNNING])
+    gh.apply(number, labels.FINISH_DONE)
     gh.comment(number, f"boss ({agent.description}) pushed `boss/issue-{number}`: {pr_url}")
     log(f"#{number}: done, {pr_url}")
     return Outcome("done", summary, pr_url)
@@ -176,14 +181,36 @@ def attempt(
 
 def fail(gh: Gh, number: int, agent: Agent, failure: Failure, secrets: list[str], log) -> Outcome:
     body = (f"boss ({agent.description}) failed: {failure.reason}. "
-            "Leaving it for a human (`boss:failed`).")  # fmt: skip
+            "Leaving it for a human (`boss:failed`). "
+            "Add the `do:*` label again to retry.")  # fmt: skip
     if failure.log and failure.log.exists():
         body += f"\n\n<details><summary>{failure.log.name}</summary>\n\n```\n"
         body += tail(failure.log, secrets) + "\n```\n</details>\n"
     gh.comment(number, body)
-    gh.edit_labels(number, add=[labels.FAILED], remove=[labels.RUNNING])
+    gh.apply(number, labels.FINISH_FAILED)
     log(f"#{number}: failed, {failure.reason}. Leaving it for a human.")
     return Outcome("failed", failure.reason)
+
+
+def vet_command(gh: Gh, number: int, current: set[str], log) -> bool:
+    """True if the issue's `do:*` label was last applied by someone boss takes commands
+    from. Otherwise drop the command, say why on the issue, and return False."""
+    trust = labels.trusted(gh.repo, gh.identity()[0])
+    command = labels.command(current)
+    who = labels.applied_by(gh.label_events(number), command) if command else None
+    if who in trust:
+        return True
+    owner = gh.repo.split("/")[0]
+    if command is None:
+        why = (f"boss dropped `{labels.QUEUED}`: the issue has no `do:*` command. "
+               "Add `do:implement` (or another `do:*` label) to have boss work on it.")  # fmt: skip
+    else:
+        why = (f"boss ignored `{command}`: it was applied by `{who or 'an unknown account'}`, "
+               f"and boss takes commands only from `{owner}`.")  # fmt: skip
+    log(f"#{number}: {why}")
+    gh.comment(number, why)
+    gh.apply(number, labels.DROP_COMMAND)
+    return False
 
 
 def tail(path: Path, secrets: list[str]) -> str:

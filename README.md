@@ -10,13 +10,25 @@ The poller is plain Python. It never calls a model itself.
 
 Labels are boss's only state, so you drive it from GitHub.
 
-| Label | Meaning |
-|---|---|
-| `boss:queued` | Put this on an issue to queue it |
-| `boss:running` / `boss:done` / `boss:failed` | Set by boss |
-| `do:implement` / `do:test` / `do:debug` | What kind of work. Default: implement |
-| `do:review` | Not supported yet |
-| `priority:p0` … `priority:p3` | Queue order. Default: p2. Ties go to the oldest issue |
+A `do:*` label is a command. Put one on an issue to have boss work on it. boss takes
+commands only from the repo's owner (and from itself): it checks who applied the label,
+and if it was anyone else, it removes the label and says why on the issue.
+
+| Label | Set by | Meaning |
+|---|---|---|
+| `do:implement` / `do:test` / `do:debug` | you | Command: do this kind of work |
+| `do:review` | you | Not supported yet |
+| `priority:p0` … `priority:p3` | you | Queue order. Default: p2. Ties go to the oldest issue |
+| `boss:draft` | anyone | Written, not approved to run. A command approves it |
+| `boss:queued` | boss | The command was accepted and is waiting for a slot |
+| `boss:running` | boss | A run holds the issue |
+| `boss:done` / `boss:failed` | boss | How the run ended; a comment says why it failed |
+| `boss:blocked` | boss | A limit or conflict needs you (nothing sets it yet) |
+
+The `do:*` label stays on while the issue is queued and running. When the run ends, boss
+removes it and sets `boss:done` or `boss:failed`. To retry, or to give an issue more work,
+add the `do:*` label again. `boss:*` labels never trigger anything, so adding
+`boss:queued` yourself does nothing.
 
 **Done means the checks pass.** boss reads the section whose heading starts with
 "Tests". In that section, each list item that starts with a code span is a check, and so
@@ -59,7 +71,7 @@ account's noreply address.
 
 ```bash
 uv run boss run owner/repo 42      # run issue 42 now
-uv run boss watch owner/repo       # poll every 60s and run boss:queued issues in priority order
+uv run boss watch owner/repo       # poll every 60s: accept do:* commands, run them in priority order
 ```
 
 Each run's files are kept in `~/.local/state/boss/runs/<repo>-<issue>-<time>/`
@@ -82,8 +94,8 @@ never sees other branches or their open PRs. To have boss build on other work, p
 
 **boss never force-pushes.** Every push is fast-forward only, and host-side git refuses
 any force flag. If the branch moves on GitHub during a run, the push is rejected. The
-issue is then marked `boss:failed` with a comment, and nothing is overwritten. Queue the
-issue again to build on the new commits.
+issue is then marked `boss:failed` with a comment, and nothing is overwritten. Add the
+`do:*` label again to build on the new commits.
 
 Only one boss process can run an issue at a time. Runs take a per-issue lock (an `flock`
 under `BOSS_HOME/locks/`), so `watch` and a manual `boss run` can't both pick up the same

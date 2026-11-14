@@ -79,6 +79,25 @@ class Gh:
         if len(args) > 5:
             self(*args)
 
+    def apply(self, number: int, transition) -> None:
+        """Make one of the label changes in labels.py."""
+        self.edit_labels(number, add=transition.add, remove=transition.remove)
+
+    def issues_with_any_label(self, names) -> list[dict]:
+        found = {}
+        for name in names:
+            for issue in self.issues_with_label(name):
+                found[issue["number"]] = issue
+        return list(found.values())
+
+    def label_events(self, number: int) -> list[tuple[str, str]]:
+        """(label, login) for each time a label was put on the issue, oldest first."""
+        out = self(
+            "api", "--paginate", f"repos/{self.repo}/issues/{number}/events",
+            "--jq", '.[] | select(.event == "labeled") | [.label.name, .actor.login // ""] | @tsv',
+        )  # fmt: skip
+        return [tuple(line.split("\t", 1)) for line in out.splitlines() if "\t" in line]
+
     def comment(self, number: int, body: str) -> None:
         self("issue", "comment", str(number), "--repo", self.repo, "--body-file", "-", stdin=body)
 

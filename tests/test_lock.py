@@ -33,6 +33,15 @@ class FakeGh:
     def edit_labels(self, number, add=(), remove=()):
         self.edits.append((number, tuple(add), tuple(remove)))
 
+    def apply(self, number, transition):
+        self.edit_labels(number, transition.add, transition.remove)
+
+    def identity(self):
+        return ("the-boss-bot", "1+the-boss-bot@users.noreply.github.com")
+
+    def label_events(self, number):
+        return [("do:implement", "o")]
+
 
 def test_requeue_skips_issues_a_live_process_holds(tmp_path):
     gh = FakeGh(running=[1, 2])
@@ -70,7 +79,8 @@ def test_watch_skips_an_issue_the_listing_still_shows_as_queued(tmp_path, monkey
         comments = []
 
         def issue(self, number):  # #1 was just failed; only #2 is really still queued
-            return {"number": number, "labels": [{"name": labels.QUEUED}] if number == 2 else []}
+            queued = [{"name": labels.QUEUED}, {"name": "do:implement"}]
+            return {"number": number, "labels": queued if number == 2 else []}
 
         def comment(self, number, body):
             self.comments.append(number)

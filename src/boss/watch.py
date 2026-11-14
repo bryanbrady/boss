@@ -1,4 +1,5 @@
-"""The poller: plain code that takes queued issues one at a time, in priority order."""
+"""The poller: plain code that accepts commands, then runs queued issues one at a time, in
+priority order."""
 
 import time
 
@@ -6,7 +7,7 @@ from boss import labels
 from boss.agents import ConfigError, Settings
 from boss.gh import Gh, GhError
 from boss.lock import Locked, issue_lock
-from boss.run import run_issue
+from boss.run import run_issue, vet_command
 
 
 def requeue_stale(settings: Settings, gh: Gh, log=print) -> None:
@@ -15,9 +16,21 @@ def requeue_stale(settings: Settings, gh: Gh, log=print) -> None:
         try:
             with issue_lock(settings.home, gh.repo, issue["number"]):
                 log(f"#{issue['number']}: was left running, queueing it again")
-                gh.edit_labels(issue["number"], add=[labels.QUEUED], remove=[labels.RUNNING])
+                gh.apply(issue["number"], labels.REQUEUE)
         except Locked:
             pass
+
+
+def accept_commands(gh: Gh, log=print) -> None:
+    """Queue each issue with a new `do:*` command boss takes, and drop the rest."""
+    for listed in gh.issues_with_any_label(labels.COMMANDS):
+        if not labels.waiting_to_be_accepted(labels.names(listed)):
+            continue
+        number = listed["number"]
+        current = labels.names(gh.issue(number))  # listings lag behind label edits
+        if labels.waiting_to_be_accepted(current) and vet_command(gh, number, current, log):
+            log(f"#{number}: accepted {labels.command(current)}")
+            gh.apply(number, labels.ACCEPT)
 
 
 def run_next(settings: Settings, gh: Gh, queue: list[dict], log=print) -> bool:
@@ -32,7 +45,7 @@ def run_next(settings: Settings, gh: Gh, queue: list[dict], log=print) -> bool:
         except (ConfigError, NotImplementedError) as error:
             log(f"#{number}: {error}; marking it {labels.FAILED}")
             gh.comment(number, f"boss can't run this: {error}")
-            gh.edit_labels(number, add=[labels.FAILED], remove=[labels.QUEUED, labels.RUNNING])
+            gh.apply(number, labels.FINISH_FAILED)
             return True
         if outcome.status == "skipped":
             continue
@@ -42,9 +55,10 @@ def run_next(settings: Settings, gh: Gh, queue: list[dict], log=print) -> bool:
 
 def watch(settings: Settings, gh: Gh, interval: int, once: bool = False, log=print) -> None:
     requeue_stale(settings, gh, log)
-    log(f"watching {gh.repo} for {labels.QUEUED} every {interval}s")
+    log(f"watching {gh.repo} for do:* commands every {interval}s")
     while True:
         try:
+            accept_commands(gh, log)
             queue = labels.queue_order(gh.issues_with_label(labels.QUEUED))
             ran = run_next(settings, gh, queue, log)
         except GhError as error:
