@@ -42,9 +42,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "labels":
         gh = Gh(args.repo, Settings.from_env().home)
-        for name, (color, description) in labels.ALL.items():
-            gh.create_label(name, color, description)
-            print(f"ok: {name}")
+        try:
+            for name, (color, description) in labels.ALL.items():
+                gh.create_label(name, color, description)
+                print(f"ok: {name}")
+        except GhError as error:
+            print(f"boss: {error}", file=sys.stderr)
+            return 2
         return 0
 
     settings = Settings.from_env(

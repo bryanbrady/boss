@@ -43,9 +43,17 @@ docker build -t boss-agent images/agent    # the sandbox image
 uv sync
 
 export CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>
+export GH_BOSS_TOKEN=<boss's GitHub account's token>
 
 uv run boss labels owner/repo              # create boss's labels in the repo
 ```
+
+boss works on GitHub as its own account, so you can tell its comments, labels, commits and
+PRs from yours. Give it a machine account, invite that account as a collaborator on each repo
+boss works in, and give boss a classic token for it with the `repo` scope (a fine-grained
+token can't act as a collaborator on another user's repo). boss uses only that token: it
+ignores your `gh` login and config and your git credentials, and it authors commits as the
+account's noreply address.
 
 ## Use
 
@@ -99,8 +107,10 @@ package registries (plus GitHub, for uv's Python downloads). Use `--allow host` 
 The Claude token stays out of the agent's container. The gate holds it, and the agent gets a
 random key that's only good for that run and only to the gate. The gate swaps the key for the
 token and forwards the agent's message requests to `api.anthropic.com`, and nothing else
-there. Checks never get the key. boss still refuses to push a diff that contains the token,
-and redacts it from anything it posts.
+there. Checks never get the key.
+
+No container ever gets the GitHub token. boss refuses to push a diff that contains either
+token, and redacts both from anything it posts.
 
 ### Nested Docker
 

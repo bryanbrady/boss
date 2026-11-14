@@ -14,7 +14,7 @@ from pathlib import Path
 
 from boss import labels, prompt
 from boss.agents import DOCKER_HUB, Agent, Settings, claude_agent
-from boss.gh import Gh
+from boss.gh import BOSS_GH_TOKEN, Gh
 from boss.git import HostRepo, PushRejected
 from boss.labels import Route
 from boss.lock import issue_lock
@@ -72,8 +72,8 @@ def _run_issue(
     if route.kind == "review":
         raise NotImplementedError("do:review isn't supported yet")
     agent = agent or claude_agent(settings)
-    token = os.environ.get(CLAUDE_TOKEN) if agent.uses_claude_api else None
-    secrets = [token] if token else []
+    names = [BOSS_GH_TOKEN, *([CLAUDE_TOKEN] if agent.uses_claude_api else [])]
+    secrets = [value for name in names if (value := os.environ.get(name))]
 
     gh.edit_labels(number, add=[labels.RUNNING],
                    remove=[labels.QUEUED, labels.DONE, labels.FAILED])  # fmt: skip
@@ -110,7 +110,7 @@ def attempt(
         directory.mkdir(parents=True)
 
     gh.clone(work, git_dir)
-    repo = HostRepo(git_dir, work)
+    repo = HostRepo(git_dir, work, author=gh.identity())
     base = repo.branch()
     branch = f"boss/issue-{number}"
     continuing = repo.start_branch(branch)
@@ -149,7 +149,7 @@ def attempt(
         message = f"{issue['title']} (#{number})\n\nboss: {route.kind} by {agent.description}"
         repo.commit_all(message)
         if any(secret in repo.diff(start) for secret in secrets):
-            raise Failure("the change contains the Claude token")
+            raise Failure("the change contains one of boss's tokens")
 
         check_lines = []
         with sandbox.session("checks", mounts) as session:

@@ -1,7 +1,7 @@
 import subprocess
 
 from boss.gh import Gh
-from boss.git import HostRepo
+from boss.git import CREDENTIALS, HostRepo
 
 
 class LocalGh(Gh):
@@ -162,3 +162,30 @@ def test_absorb_strips_a_plain_nested_repo_the_agent_created(tmp_path, monkeypat
     repo.commit_all("vendor")
     tracked = repo("ls-tree", "-r", "--name-only", "HEAD").split()
     assert "vendor/thing.txt" in tracked
+
+
+def test_host_git_answers_github_with_boss_token_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("GH_BOSS_TOKEN", "boss-bot-token")
+    repo = HostRepo(tmp_path, tmp_path)
+    git("init", "--quiet", str(tmp_path))
+    fill = subprocess.run(
+        ["git", *CREDENTIALS, "credential", "fill"],
+        input="protocol=https\nhost=github.com\n\n", capture_output=True, text=True,
+        env=repo.env(), cwd=tmp_path, check=True,
+    )  # fmt: skip
+    assert "username=x-access-token" in fill.stdout
+    assert "password=boss-bot-token" in fill.stdout
+    assert "boss-bot-token" not in " ".join(CREDENTIALS)  # read from the environment
+
+
+def test_boss_commits_as_its_own_account(tmp_path, monkeypatch):
+    origin = make_origin(tmp_path, monkeypatch)
+    work, git_dir = tmp_path / "work", tmp_path / "git"
+    LocalGh(origin, tmp_path).clone(work, git_dir)
+    bot = ("the-boss-bot", "1+the-boss-bot@users.noreply.github.com")
+    repo = HostRepo(git_dir, work, author=bot)
+    (work / "new.txt").write_text("x")
+    repo.commit_all("change")
+    who = repo("log", "-1", "--format=%an <%ae> / %cn <%ce>").strip()
+    assert who == ("the-boss-bot <1+the-boss-bot@users.noreply.github.com> / "
+                   "the-boss-bot <1+the-boss-bot@users.noreply.github.com>")  # fmt: skip

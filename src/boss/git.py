@@ -16,6 +16,10 @@ step into one, and records the pinned commits as gitlinks with `update-index`.
 
 boss never force-pushes. `push` is fast-forward only, and `__call__` refuses any push
 that could overwrite a branch.
+
+Host git talks to GitHub as boss's account. A credential helper that boss passes on the
+command line answers with the token from GH_BOSS_TOKEN, read from the environment, so the
+token never appears in an argument list, and no other configured helper is asked.
 """
 
 import os
@@ -25,6 +29,12 @@ import subprocess
 from pathlib import Path
 
 HARDENED = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+GITHUB_HELPER = "credential.https://github.com.helper"
+CREDENTIALS = [
+    "-c", "credential.helper=", "-c", f"{GITHUB_HELPER}=",  # forget the user's helpers
+    "-c", f"{GITHUB_HELPER}=!f() {{ test \"$1\" = get || return 0; "
+          "echo username=x-access-token; echo \"password=$GH_BOSS_TOKEN\"; }; f",
+]  # fmt: skip
 FORCE_FLAGS = {"-f", "--force", "--force-with-lease", "--force-if-includes", "--mirror"}
 OBJECT_ID = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")  # sha-1, or sha-256
 
@@ -34,9 +44,10 @@ class PushRejected(RuntimeError):
 
 
 class HostRepo:
-    def __init__(self, git_dir: Path, work_tree: Path):
+    def __init__(self, git_dir: Path, work_tree: Path, author: tuple[str, str] | None = None):
         self.git_dir = git_dir
         self.work_tree = work_tree
+        self.author = author  # (name, email) for boss's commits
         self.gitlinks: dict[str, str] = {}  # submodule path -> pinned commit, set by absorb
 
     def __call__(self, *args: str) -> str:
@@ -47,14 +58,24 @@ class HostRepo:
         ):
             raise ValueError(f"boss never force-pushes: git {' '.join(args)}")
         result = subprocess.run(
-            ["git", *HARDENED, f"--git-dir={self.git_dir}", f"--work-tree={self.work_tree}", *args],
+            ["git", *HARDENED, *CREDENTIALS,
+             f"--git-dir={self.git_dir}", f"--work-tree={self.work_tree}", *args],
             cwd=self.git_dir,
             capture_output=True,
             text=True,
-        )
+            env=self.env(),
+        )  # fmt: skip
         if result.returncode != 0:
             raise RuntimeError(f"git {' '.join(args[:2])}: {result.stderr.strip()}")
         return result.stdout
+
+    def env(self) -> dict[str, str]:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        if self.author:
+            name, email = self.author
+            for role in ("AUTHOR", "COMMITTER"):
+                env.update({f"GIT_{role}_NAME": name, f"GIT_{role}_EMAIL": email})
+        return env
 
     def give_agent_a_copy(self) -> None:
         """Replace the .git file `clone --separate-git-dir` left in the work tree with a

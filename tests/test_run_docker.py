@@ -40,6 +40,9 @@ class FakeGh(Gh):
     def comment(self, number, body):
         self.comments.append(body)
 
+    def identity(self):
+        return ("the-boss-bot", "1+the-boss-bot@users.noreply.github.com")
+
     def clone(self, work_tree, git_dir):
         subprocess.run(["git", "clone", "--quiet", "--single-branch",
                         f"--separate-git-dir={git_dir}", str(self.origin), str(work_tree)],

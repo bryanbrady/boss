@@ -1,5 +1,9 @@
 """GitHub access through the gh CLI.
 
+boss acts on GitHub as its own account, with the token in GH_BOSS_TOKEN, so its comments,
+labels, PRs and pushes are told apart from the owner's. gh gets that token and a config
+directory of boss's own, so the user's gh login, aliases and git protocol never apply.
+
 Only the host process calls this. Containers never hold a GitHub token. gh runs from a
 directory boss controls, never from a run's work tree, whose git config the agent could
 have changed.
@@ -12,8 +16,12 @@ from pathlib import Path
 
 ISSUE_FIELDS = "number,title,body,labels,comments,state,url"
 
+BOSS_GH_TOKEN = "GH_BOSS_TOKEN"
+
 # gh colors its output, JSON included, when these force it, even into a pipe.
 FORCE_COLOR_VARS = ("CLICOLOR_FORCE", "GH_FORCE_TTY", "FORCE_COLOR")
+# Credentials gh would pick up in place of boss's own.
+OTHER_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 
 
 class GhError(RuntimeError):
@@ -24,6 +32,7 @@ class Gh:
     def __init__(self, repo: str, cwd: Path):
         self.repo = repo
         self.cwd = cwd
+        self._identity: tuple[str, str] | None = None
 
     def __call__(self, *args: str, stdin: str | None = None) -> str:
         result = subprocess.run(
@@ -32,7 +41,7 @@ class Gh:
             input=stdin,
             capture_output=True,
             text=True,
-            env=gh_env(),
+            env=gh_env(self.cwd / "gh"),
         )
         if result.returncode != 0:
             raise GhError(f"gh {' '.join(args[:3])}: {result.stderr.strip()}")
@@ -40,6 +49,14 @@ class Gh:
 
     def json(self, *args: str):
         return json.loads(self(*args))
+
+    def identity(self) -> tuple[str, str]:
+        """boss's login and the noreply address its commits are authored with."""
+        if self._identity is None:
+            user = self.json("api", "user")
+            login = user["login"]
+            self._identity = (login, f"{user['id']}+{login}@users.noreply.github.com")
+        return self._identity
 
     def issue(self, number: int) -> dict:
         return self.json("issue", "view", str(number), "--repo", self.repo, "--json", ISSUE_FIELDS)
@@ -89,7 +106,12 @@ class Gh:
              "--description", description, "--force")  # fmt: skip
 
 
-def gh_env() -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in FORCE_COLOR_VARS}
-    env["NO_COLOR"] = "1"
+def gh_env(config_dir: Path) -> dict[str, str]:
+    token = os.environ.get(BOSS_GH_TOKEN)
+    if not token:
+        raise GhError(f"set {BOSS_GH_TOKEN} to the token of boss's GitHub account")
+    skip = (*FORCE_COLOR_VARS, *OTHER_TOKEN_VARS)
+    env = {k: v for k, v in os.environ.items() if k not in skip}
+    config_dir.mkdir(parents=True, exist_ok=True)
+    env.update(GH_TOKEN=token, GH_CONFIG_DIR=str(config_dir), GH_PROMPT_DISABLED="1", NO_COLOR="1")
     return env
