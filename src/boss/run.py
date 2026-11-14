@@ -18,7 +18,7 @@ from boss.gh import Gh
 from boss.git import HostRepo, PushRejected
 from boss.labels import Route
 from boss.lock import issue_lock
-from boss.sandbox import Mount, Sandbox
+from boss.sandbox import CLAUDE_TOKEN, Mount, Sandbox
 
 LOG_TAIL_LINES = 60
 LOG_TAIL_CHARS = 6000
@@ -72,7 +72,8 @@ def _run_issue(
     if route.kind == "review":
         raise NotImplementedError("do:review isn't supported yet")
     agent = agent or claude_agent(settings)
-    secrets = [v for k in agent.inherit_env if (v := os.environ.get(k))]
+    token = os.environ.get(CLAUDE_TOKEN) if agent.uses_claude_api else None
+    secrets = [token] if token else []
 
     gh.edit_labels(number, add=[labels.RUNNING],
                    remove=[labels.QUEUED, labels.DONE, labels.FAILED])  # fmt: skip
@@ -126,15 +127,15 @@ def attempt(
     mounts = [Mount(work, "/work"), Mount(inputs, "/boss", read_only=True)]
     allow = [*agent.allow, *(DOCKER_HUB if settings.nested_docker else [])]
     sandbox = Sandbox(run_dir.name.lower(), settings.image, logs, allow,
-                      nested_docker=settings.nested_docker)  # fmt: skip
+                      nested_docker=settings.nested_docker,
+                      claude_api=agent.uses_claude_api)  # fmt: skip
     with sandbox:
         log(f"#{number}: agent running (timeout {settings.agent_timeout}s)")
         with sandbox.session("agent", mounts) as session:
             result = session.run(
                 "agent",
                 agent.command,
-                env=agent.env,
-                inherit_env=agent.inherit_env,
+                env={**agent.env, **sandbox.agent_env},
                 timeout=settings.agent_timeout,
             )
         if result.timed_out:
@@ -148,7 +149,7 @@ def attempt(
         message = f"{issue['title']} (#{number})\n\nboss: {route.kind} by {agent.description}"
         repo.commit_all(message)
         if any(secret in repo.diff(start) for secret in secrets):
-            raise Failure("the change contains a secret from the agent's environment")
+            raise Failure("the change contains the Claude token")
 
         check_lines = []
         with sandbox.session("checks", mounts) as session:

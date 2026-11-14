@@ -7,6 +7,10 @@ reach. They also run as the host user with no capabilities, a read-only root fil
 resource limits and a wall-clock timeout. The only host paths they see are the ones a run
 mounts: the work tree, and the run's read-only input directory.
 
+A run that uses Claude keeps the token in the gate. The agent gets a random key that's only
+good for this run, and the gate swaps it for the token on the way out (see gate.py). The
+gate's other users, such as the checks, never get the key.
+
 With nested Docker, commands run in a Sysbox container instead: a box with its own Docker
 daemon, so an agent can build images and bring up a compose stack. Root in the box is an
 unprivileged user on the host, and the box can't see the host's daemon or containers. It
@@ -21,6 +25,7 @@ one volume for the daemon's storage, so the checks reuse images the agent pulled
 """
 
 import os
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -31,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PROXY = "http://gate:3128"
+API_URL = "http://gate:8080"
+CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
 SYSBOX = "sysbox-runc"
 DAEMON_START_TIMEOUT = 60
 
@@ -77,6 +84,16 @@ class Sandbox:
     allow: list[str] = field(default_factory=list)  # host[:port] the gate admits over HTTPS
     limits: Limits = field(default_factory=Limits)
     nested_docker: bool = False
+    claude_api: bool = False  # give the gate the Claude token and have it forward API requests
+    run_key: str = field(default_factory=lambda: secrets.token_hex(32))
+
+    @property
+    def agent_env(self) -> dict[str, str]:
+        """What the agent needs to reach Claude. Claude Code sends this key as if it were
+        the token, in its normal OAuth request shape, and the gate replaces it."""
+        if not self.claude_api:
+            return {}
+        return {"ANTHROPIC_BASE_URL": API_URL, CLAUDE_TOKEN: self.run_key}
 
     @property
     def network(self) -> str:
@@ -137,10 +154,9 @@ class Sandbox:
         mounts: list[Mount],
         timeout: int,
         env: dict[str, str] | None = None,
-        inherit_env: list[str] | None = None,
     ) -> Result:
         container = f"{self.network}-{name}"
-        args = run_args(self, container, command, mounts, env or {}, inherit_env or [])
+        args = run_args(self, container, command, mounts, env or {})
         return supervise(args, self.log_dir / f"{name}.log", timeout, container)
 
 
@@ -186,9 +202,8 @@ class Box:
         *,
         timeout: int,
         env: dict[str, str] | None = None,
-        inherit_env: list[str] | None = None,
     ) -> Result:
-        args = exec_args(self.container, command, env or {}, inherit_env or [])
+        args = exec_args(self.container, command, env or {})
         result = supervise(args, self.sandbox.log_dir / f"{name}.log", timeout, self.container)
         self.killed |= result.timed_out
         return result
@@ -300,8 +315,11 @@ def gate_args(sandbox: Sandbox) -> list[str]:
         "--network", sandbox.network, "--network-alias", "gate",
         "--user", "65534:65534", "--entrypoint", "python3",
         *hardening(Limits(memory="256m", cpus="1", pids=256, tmp_size="16m")),
-        sandbox.image, "/usr/local/bin/boss-gate",
     ]  # fmt: skip
+    if sandbox.claude_api:
+        # The token passes by name, so its value never appears in an argument list.
+        args += ["--env", CLAUDE_TOKEN, "--env", f"BOSS_RUN_KEY={sandbox.run_key}"]
+    args += [sandbox.image, "/usr/local/bin/boss-gate"]
     for host in sandbox.allow:
         args += ["--allow", host]
     return args
@@ -319,7 +337,6 @@ def run_args(
     command: list[str],
     mounts: list[Mount],
     env: dict[str, str],
-    inherit_env: list[str],
 ) -> list[str]:
     args = [
         "run", "--rm", "--init", "--name", container,
@@ -331,7 +348,7 @@ def run_args(
     ]  # fmt: skip
     for mount in mounts:
         args += ["--mount", mount.arg()]
-    args += env_args({**PROXY_ENV, **env}, inherit_env)
+    args += env_args({**PROXY_ENV, **env})
     return ["docker", *args, sandbox.image, *command]
 
 
@@ -348,26 +365,21 @@ def box_args(sandbox: Sandbox, container: str) -> list[str]:
         "--cpus", limits.cpus,
         "--entrypoint", "boss-dockerd",
     ]  # fmt: skip
-    args += env_args(PROXY_ENV, [])  # for the daemon's own pulls
+    args += env_args(PROXY_ENV)  # for the daemon's own pulls
     return [*args, sandbox.image, str(os.getgid())]
 
 
-def exec_args(
-    container: str, command: list[str], env: dict[str, str], inherit_env: list[str]
-) -> list[str]:
+def exec_args(container: str, command: list[str], env: dict[str, str]) -> list[str]:
     args = ["exec", "--user", f"{os.getuid()}:{os.getgid()}", "--workdir", "/work"]
-    args += env_args({**PROXY_ENV, **env}, inherit_env)
+    args += env_args({**PROXY_ENV, **env})
     # docker exec skips the image's entrypoint, which sets up the user's home directory.
     return ["docker", *args, container, "boss-entrypoint", *command]
 
 
-def env_args(env: dict[str, str], inherit_env: list[str]) -> list[str]:
+def env_args(env: dict[str, str]) -> list[str]:
     args = []
     for key, value in env.items():
         args += ["--env", f"{key}={value}"]
-    # Secrets pass by name, so their values never appear in an argument list.
-    for key in inherit_env:
-        args += ["--env", key]
     return args
 
 

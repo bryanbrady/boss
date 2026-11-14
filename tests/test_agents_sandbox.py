@@ -14,24 +14,49 @@ def settings(**kwargs):
     return Settings(home=Path("/tmp/boss-test"), **kwargs)
 
 
-def test_claude_agent_passes_its_token_by_name(monkeypatch):
+def test_claude_agent_needs_a_token_and_reaches_claude_through_the_gate(monkeypatch):
     monkeypatch.delenv(CLAUDE_TOKEN, raising=False)
     with pytest.raises(ConfigError):
         claude_agent(settings())
     monkeypatch.setenv(CLAUDE_TOKEN, "sk-secret")
     agent = claude_agent(settings())
-    assert agent.inherit_env == [CLAUDE_TOKEN]
-    assert "api.anthropic.com" in agent.allow
-    sandbox = Sandbox("r1", "img", Path("/tmp"), agent.allow)
-    args = run_args(sandbox, "c", agent.command, [], agent.env, agent.inherit_env)
-    assert "sk-secret" not in " ".join(args)
-    at = args.index(CLAUDE_TOKEN)
-    assert args[at - 1 : at + 1] == ["--env", CLAUDE_TOKEN]
+    assert agent.uses_claude_api
+    # Open CONNECT access would let anything in the box use its own key to send data out.
+    assert "api.anthropic.com" not in agent.allow
+
+
+def test_the_token_stays_in_the_gate(monkeypatch):
+    monkeypatch.setenv(CLAUDE_TOKEN, "sk-secret")
+    sandbox = Sandbox("r1", "img", Path("/tmp"), claude_api=True)
+    gate = gate_args(sandbox)
+    at = gate.index(CLAUDE_TOKEN)
+    assert gate[at - 1 : at + 1] == ["--env", CLAUDE_TOKEN]  # by name, so never in `ps`
+    assert f"BOSS_RUN_KEY={sandbox.run_key}" in gate
+    assert "sk-secret" not in " ".join(gate)
+
+    for args in (
+        run_args(sandbox, "c", ["claude"], [], sandbox.agent_env),
+        exec_args("box", ["claude"], sandbox.agent_env),
+    ):
+        assert "sk-secret" not in " ".join(args)
+        assert CLAUDE_TOKEN not in args  # passing it by name would hand over the real one
+        assert f"{CLAUDE_TOKEN}={sandbox.run_key}" in args
+        assert "ANTHROPIC_BASE_URL=http://gate:8080" in args
+
+
+def test_each_run_gets_its_own_key():
+    assert Sandbox("r1", "img", Path("/tmp")).run_key != Sandbox("r1", "img", Path("/tmp")).run_key
+
+
+def test_a_run_without_claude_gives_the_gate_no_token():
+    sandbox = Sandbox("r1", "img", Path("/tmp"))
+    assert sandbox.agent_env == {}
+    assert CLAUDE_TOKEN not in gate_args(sandbox)
 
 
 def test_containers_are_locked_down():
     sandbox = Sandbox("r1", "img", Path("/tmp"))
-    args = run_args(sandbox, "c", ["true"], [Mount(Path("/w"), "/work")], {}, [])
+    args = run_args(sandbox, "c", ["true"], [Mount(Path("/w"), "/work")], {})
     joined = " ".join(args)
     for flag in ("--read-only", "--cap-drop ALL", "no-new-privileges", "--pids-limit",
                  "--memory", "--network boss-r1", "--rm"):  # fmt: skip
@@ -45,7 +70,6 @@ def test_gate_gets_the_allowlist():
     args = gate_args(sandbox)
     assert args[-2:] == ["--allow", "pypi.org"]
     assert "65534:65534" in args
-    assert "--forward" not in args
 
 
 def test_boxes_use_sysbox_and_mount_nothing_from_the_host():
@@ -62,12 +86,10 @@ def test_boxes_use_sysbox_and_mount_nothing_from_the_host():
         assert flag in joined
 
 
-def test_box_commands_run_as_the_host_user_and_pass_secrets_by_name(monkeypatch):
-    monkeypatch.setenv(CLAUDE_TOKEN, "sk-secret")
-    args = exec_args("box", ["claude"], {"A": "1"}, [CLAUDE_TOKEN])
+def test_box_commands_run_as_the_host_user():
+    args = exec_args("box", ["claude"], {"A": "1"})
     assert args[:3] == ["docker", "exec", "--user"]
     assert args[3] == f"{os.getuid()}:{os.getgid()}"
-    assert "sk-secret" not in " ".join(args)
     assert "HTTPS_PROXY=http://gate:3128" in args
     assert args[-2:] == ["boss-entrypoint", "claude"]
 

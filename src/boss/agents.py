@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from boss.sandbox import CLAUDE_TOKEN
+
 # Package registries every container may reach through the gate, so the agent and checks
 # can install dependencies. uv fetches Python builds from GitHub release assets.
 REGISTRIES = [
@@ -19,8 +21,6 @@ DOCKER_HUB = [
     "registry-1.docker.io", "auth.docker.io",
     "production.cloudflare.docker.com", "production.cloudfront.docker.com",
 ]  # fmt: skip
-
-CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
 
 
 class ConfigError(RuntimeError):
@@ -56,7 +56,7 @@ class Agent:
     command: list[str]
     files: dict[str, str] = field(default_factory=dict)  # written to /boss
     env: dict[str, str] = field(default_factory=dict)
-    inherit_env: list[str] = field(default_factory=list)  # secrets, passed by name
+    uses_claude_api: bool = False  # reaches Claude through the gate, which holds the token
     allow: list[str] = field(default_factory=list)
 
 
@@ -72,6 +72,6 @@ def claude_agent(settings: Settings) -> Agent:
             f"exec claude -p --dangerously-skip-permissions --output-format text{model}"
             " < /boss/prompt.md",
         ],  # fmt: skip
-        inherit_env=[CLAUDE_TOKEN],
-        allow=["api.anthropic.com", *REGISTRIES, *settings.extra_allow],
+        uses_claude_api=True,
+        allow=[*REGISTRIES, *settings.extra_allow],
     )

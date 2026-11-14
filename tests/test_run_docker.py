@@ -17,7 +17,7 @@ from boss.agents import REGISTRIES, Agent, Settings
 from boss.gh import Gh
 from boss.git import HostRepo
 from boss.run import run_issue
-from boss.sandbox import Sandbox, has_sysbox
+from boss.sandbox import CLAUDE_TOKEN, Sandbox, has_sysbox
 
 pytestmark = pytest.mark.docker
 
@@ -162,15 +162,15 @@ def test_claude_failure_is_left_for_a_human(world):
     assert "no changes" in gh.comments[-1]
 
 
-def test_secrets_are_not_pushed_or_posted(world, monkeypatch):
+def test_the_token_is_not_pushed_or_posted(world, monkeypatch):
     tmp_path, origin, settings = world
-    monkeypatch.setenv("BOSS_TEST_SECRET", "s3cr3t-value")
+    monkeypatch.setenv(CLAUDE_TOKEN, "s3cr3t-value")
     gh = FakeGh(origin, make_issue(""), tmp_path)
-    agent = script_agent('echo "$BOSS_TEST_SECRET" | tee leak.txt',
-                         inherit_env=["BOSS_TEST_SECRET"])  # fmt: skip
+    agent = script_agent('echo "$PLANTED" | tee leak.txt', env={"PLANTED": "s3cr3t-value"},
+                         uses_claude_api=True)  # fmt: skip
     outcome = run_issue(settings, gh, 1, agent=agent)
     assert outcome.status == "failed"
-    assert "secret" in outcome.summary
+    assert "token" in outcome.summary
     assert all("s3cr3t-value" not in c for c in gh.comments)
 
 
@@ -202,6 +202,53 @@ def test_sandbox_reaches_only_the_allowlist(tmp_path):
         assert not curl("https://example.com/", "--noproxy", "*")
         assert not curl("https://1.1.1.1/", "--noproxy", "*")
     assert "deny  example.com:443" in (tmp_path / "gate.log").read_text()
+
+
+def test_claude_is_reachable_only_through_the_gate_and_only_with_the_run_key(tmp_path, monkeypatch):
+    monkeypatch.setenv(CLAUDE_TOKEN, "fake-token-for-boss-test")
+    script = r"""
+    post() { curl -sS -m 30 -o /tmp/out -w '%{http_code}' -H 'Content-Type: application/json' \
+             -d '{}' "$@"; echo " $(cat /tmp/out)"; }
+    echo "keyed: $(post -H "Authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" $ANTHROPIC_BASE_URL/v1/messages)"
+    echo "nokey: $(post $ANTHROPIC_BASE_URL/v1/messages)"
+    echo "files: $(post -H "Authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" $ANTHROPIC_BASE_URL/v1/files)"
+    curl -sS -m 10 -o /dev/null https://api.anthropic.com/ && echo "direct: reached" || echo "direct: refused"
+    env | grep -c fake-token-for-boss-test || true
+    """  # noqa: E501
+    with Sandbox("gate-api-test", "boss-agent", tmp_path, claude_api=True) as sandbox:
+        result = sandbox.run("probe", ["sh", "-c", script], mounts=[], timeout=120,
+                             env=sandbox.agent_env)  # fmt: skip
+    output = result.log.read_text()
+    lines = {k: v.strip() for k, _, v in (ln.partition(":") for ln in output.splitlines())}
+    # The fake token got as far as Anthropic, which is what refused it. The gate's own
+    # refusals have empty bodies.
+    assert lines["keyed"].startswith("401 {"), output
+    assert "error" in lines["keyed"]
+    assert lines["nokey"] == "401", output
+    assert lines["files"] == "403", output
+    assert lines["direct"] == "refused", output
+    assert output.splitlines()[-1] == "0", output  # the agent's environment never held it
+    gate_log = (tmp_path / "gate.log").read_text()
+    assert "allow api /v1/messages" in gate_log
+    assert "fake-token-for-boss-test" not in gate_log
+
+
+@pytest.mark.skipif(not os.environ.get(CLAUDE_TOKEN), reason=f"needs a real {CLAUDE_TOKEN}")
+def test_claude_code_works_through_the_gate_with_a_real_token(tmp_path):
+    prompt = "Run the shell command `echo gate-$((40+2))` with Bash, then reply with its output."
+    script = f"claude -p --dangerously-skip-permissions --model claude-haiku-5-5 '{prompt}'"
+    script += " < /dev/null; code=$?; echo; env; exit $code"
+    with Sandbox("gate-real-test", "boss-agent", tmp_path, claude_api=True) as sandbox:
+        result = sandbox.run("claude", ["sh", "-c", script], mounts=[], timeout=180,
+                             env=sandbox.agent_env)  # fmt: skip
+    output = result.log.read_text()
+    gate_log = (tmp_path / "gate.log").read_text()
+    # Not in a message: on failure, the message itself would print the token.
+    leaked = os.environ[CLAUDE_TOKEN] in output + gate_log
+    assert not leaked
+    assert result.ok, output
+    assert "gate-42" in output
+    assert "allow api /v1/messages" in gate_log and "200" in gate_log, gate_log
 
 
 needs_sysbox = pytest.mark.skipif(not has_sysbox(), reason="needs the Sysbox runtime")

@@ -93,10 +93,14 @@ Agents and checks run in containers that:
   SSH keys, Docker socket or GitHub token
 - sit on a per-run internal network with no route out
 
-Each run's only way out is a gate container, which proxies HTTPS only to an allowlist:
-`api.anthropic.com`, and the package registries (plus GitHub, for uv's Python downloads).
-Use `--allow host` to add more. The Claude token is passed to the container by name, and
-boss refuses to push a diff that contains it. boss also redacts it from anything it posts.
+Each run's only way out is a gate container, which proxies HTTPS only to an allowlist: the
+package registries (plus GitHub, for uv's Python downloads). Use `--allow host` to add more.
+
+The Claude token stays out of the agent's container. The gate holds it, and the agent gets a
+random key that's only good for that run and only to the gate. The gate swaps the key for the
+token and forwards the agent's message requests to `api.anthropic.com`, and nothing else
+there. Checks never get the key. boss still refuses to push a diff that contains the token,
+and redacts it from anything it posts.
 
 ### Nested Docker
 
