@@ -8,6 +8,9 @@ GitHub stays the source of truth: issues, labels, PRs and comments hold the desi
 project history. Anything boss keeps locally is either a cache or a run's logs, and losing it
 loses no state.
 
+**Status (2026-11-21):** decisions 1 and 2, the label state machine and isolation item 1 are
+built. Nothing else in this plan is built yet, and Phase 1 is next.
+
 ## Threat model
 
 - The repos are private. Code comes from me or from Claude. Other agents may come later.
