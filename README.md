@@ -74,6 +74,9 @@ uv run boss run owner/repo 42      # run issue 42 now
 uv run boss watch owner/repo       # poll every 60s: accept do:* commands, run them in priority order
 ```
 
+You drive boss from GitHub with labels. [docs/gh.md](docs/gh.md) has the `gh` commands for
+giving boss work, watching the queue and reviewing its PRs.
+
 Each run's files are kept in `~/.local/state/boss/runs/<repo>-<issue>-<time>/`
 (`BOSS_HOME` moves them):
 - `logs/agent.log`: the agent's output
